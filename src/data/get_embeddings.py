@@ -96,7 +96,7 @@ if __name__ == "__main__":
     
     parser = ArgumentParser(description="Get embeddings for a dataset")
     parser.add_argument(
-        "--dataset_path", type=str, help="Dataset name", default='../../datasets/ultrafeedback/'
+        "--dataset_path", type=str, help="Dataset name", default='./datasets/ultrafeedback/'
     )
     parser.add_argument(
         "--model_name", type=str, help="Model name", default="meta-llama/Meta-Llama-3-8B"
@@ -118,6 +118,7 @@ if __name__ == "__main__":
 
     print("Loading the dataset ...")
     ds = datasets.load_from_disk(os.path.join(args.dataset_path + 'examples/'))
+    #ds = ds.select(list(range(128)))
     n_devices = len(devices)
     n = len(ds)
     chunked_datasets = [

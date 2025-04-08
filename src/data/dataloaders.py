@@ -8,7 +8,8 @@ class PreferenceDataset(Dataset):
             self, 
             embeddings_path,
             splits_path,
-            labels_path,
+            concept_labels_path,
+            preference_labels_path,
             split='train'
         ):
         
@@ -22,14 +23,23 @@ class PreferenceDataset(Dataset):
         splits_df = splits_df[splits_df['split'] == split]
 
         # Load labels
-        labels_df = load_from_disk(labels_path).to_pandas()
+        concept_labels_df = load_from_disk(concept_labels_path).to_pandas()
+        preference_labels_df = load_from_disk(preference_labels_path).to_pandas()
 
         # Create index of response pairs with labels
         self.pairs_data = pd.merge(
             splits_df,
-            labels_df,
+            concept_labels_df,
             left_on=['idx_a', 'idx_b'],
             right_on=['idx_a', 'idx_b'],
+            how='left',
+        )
+        self.pairs_data = pd.merge(
+            self.pairs_data,
+            preference_labels_df,
+            left_on=['idx_a', 'idx_b'],
+            right_on=['idx_a', 'idx_b'],
+            how='left',
         )
         
         assert len(self.pairs_data) == len(splits_df)
@@ -39,12 +49,17 @@ class PreferenceDataset(Dataset):
             (self.pairs_data['idx_a'].isin(self.embeddings_df.index)) &
             (self.pairs_data['idx_b'].isin(self.embeddings_df.index))
         ]
+        
+        self.concept_names = concept_labels_df.iloc[0]['concept_names']
 
     def __getitem__(self, pair_idx):
         idx_a = self.pairs_data.iloc[pair_idx]['idx_a']
         idx_b = self.pairs_data.iloc[pair_idx]['idx_b']
         preference_label = self.pairs_data.iloc[pair_idx]['preference_label']
         concept_labels = self.pairs_data.iloc[pair_idx]['relative_concept_labels']
+        
+        if concept_labels is None:
+            concept_labels = torch.ones(len(self.concept_names)) * -1.0
         
         return {
             'example_a': self.construct_example(idx_a),
@@ -86,11 +101,11 @@ def collate_fn(batch):
     
 
 if __name__ == '__main__':
-
     dataset = PreferenceDataset(
         embeddings_path='./datasets/ultrafeedback/embeddings/meta-llama/Meta-Llama-3-8B/',
         splits_path='./datasets/ultrafeedback/splits.csv',
-        labels_path='./datasets/ultrafeedback/labels/openbmb_average'
+        concept_labels_path='./datasets/ultrafeedback/concept_labels/meta-llama/Meta-Llama-3-70B-Instruct',
+        preference_labels_path='./datasets/ultrafeedback/preference_labels/openbmb_average',
     )
 
     dataloader = DataLoader(
