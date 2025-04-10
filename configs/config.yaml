@@ -1,0 +1,28 @@
+model:
+  encoder: simple
+  input_dim: 4096        
+  device: cuda:0           
+
+training:
+  num_epochs: 10
+  lr: 1e-4
+  eval_steps: 100
+  save_steps: 500
+  max_num_eval_steps: 100
+  seed: 42
+  dry_run: False         # Set to true to skip wandb logging and saving
+
+loss:
+  beta: 0.2              # Weight for preference loss in total loss
+
+save:
+  project_name: active_pref_learning
+  run_name_prefix: openbmb_labels_beta_0.2
+
+data:
+  embeddings_path: './datasets/ultrafeedback/embeddings/meta-llama/Meta-Llama-3-8B/'
+  splits_path: './datasets/ultrafeedback/splits.csv'
+  concept_labels_path: './datasets/ultrafeedback/concept_labels/openbmb' 
+  preference_labels_path: './datasets/ultrafeedback/preference_labels/openbmb_average'
+  batch_size: 1024
+  

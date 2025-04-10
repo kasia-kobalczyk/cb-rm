@@ -2,6 +2,7 @@ from torch.utils.data import Dataset, DataLoader
 from datasets import load_from_disk
 import pandas as pd
 import torch 
+import numpy as np
 
 class PreferenceDataset(Dataset):
     def __init__(
@@ -58,9 +59,12 @@ class PreferenceDataset(Dataset):
         preference_label = self.pairs_data.iloc[pair_idx]['preference_label']
         concept_labels = self.pairs_data.iloc[pair_idx]['relative_concept_labels']
         
-        if concept_labels is None:
-            concept_labels = torch.ones(len(self.concept_names)) * -1.0
         
+        if concept_labels is None or (isinstance(concept_labels, float) and np.isnan(concept_labels)):
+            concept_labels = torch.ones(len(self.concept_names)) * -1.0
+        else:
+            concept_labels = torch.tensor(concept_labels)
+
         return {
             'example_a': self.construct_example(idx_a),
             'example_b': self.construct_example(idx_b),
@@ -84,8 +88,8 @@ class PreferenceDataset(Dataset):
 
 def collate_example(example):
     return {
-        'prompt_embeddings': torch.stack([torch.tensor(x['prompt_embedding']) for x in example]),
-        'prompt_response_embeddings': torch.stack([torch.tensor(x['prompt_response_embedding']) for x in example]),
+        'prompt_embedding': torch.stack([torch.tensor(x['prompt_embedding']) for x in example]),
+        'prompt_response_embedding': torch.stack([torch.tensor(x['prompt_response_embedding']) for x in example]),
     }
 
 def collate_fn(batch):
@@ -96,30 +100,61 @@ def collate_fn(batch):
         'example_a': example_a,
         'example_b': example_b,
         'preference_labels': torch.stack([torch.tensor(x['preference_label']).reshape(1) for x in batch]),
-        'concept_labels': torch.stack([torch.tensor(x['concept_labels']) for x in batch]),
+        'concept_labels': torch.stack([x['concept_labels'] for x in batch]),
     }
-    
 
-if __name__ == '__main__':
+def get_dataloader(cfg, split='train'):
     dataset = PreferenceDataset(
-        embeddings_path='./datasets/ultrafeedback/embeddings/meta-llama/Meta-Llama-3-8B/',
-        splits_path='./datasets/ultrafeedback/splits.csv',
-        concept_labels_path='./datasets/ultrafeedback/concept_labels/meta-llama/Meta-Llama-3-70B-Instruct',
-        preference_labels_path='./datasets/ultrafeedback/preference_labels/openbmb_average',
+        embeddings_path=cfg.embeddings_path,
+        splits_path=cfg.splits_path,
+        concept_labels_path=cfg.concept_labels_path,
+        preference_labels_path=cfg.preference_labels_path,
+        split='train'
     )
 
     dataloader = DataLoader(
         dataset,
-        batch_size=4,
+        batch_size=cfg.batch_size,
         shuffle=True,
         collate_fn=collate_fn,
     )
 
+    return dataloader
+
+def batch_to_device(batch, device):
+    for key in batch:
+        if isinstance(batch[key], torch.Tensor):
+            batch[key] = batch[key].to(device)
+        elif isinstance(batch[key], list):
+            batch[key] = [
+                item.to(device) if isinstance(item, torch.Tensor) else item for item in batch[key]
+            ]
+        elif isinstance(batch[key], dict):
+            batch[key] = dict(zip(
+                batch[key].keys(),
+                [item.to(device) if isinstance(item, torch.Tensor) else item for item in batch[key].values()]
+            ))
+            
+    return batch
+
+if __name__ == '__main__':
+    from argparse import Namespace
+    cfg = Namespace(
+        embeddings_path='./datasets/ultrafeedback/embeddings/meta-llama/Meta-Llama-3-8B/',
+        splits_path='./datasets/ultrafeedback/splits.csv',
+        concept_labels_path='./datasets/ultrafeedback/concept_labels/meta-llama/Meta-Llama-3-70B-Instruct',
+        preference_labels_path='./datasets/ultrafeedback/preference_labels/openbmb_average',
+        batch_size=4,
+    )
+    
+    dataloader = get_dataloader(cfg, split='train')
+    print(f'Number of batches: {len(dataloader)}')
+
     for batch in dataloader:
-        print(batch['example_a']['prompt_embeddings'].shape)
-        print(batch['example_a']['prompt_response_embeddings'].shape)
-        print(batch['example_b']['prompt_embeddings'].shape)
-        print(batch['example_b']['prompt_response_embeddings'].shape)
+        print(batch['example_a']['prompt_embedding'].shape)
+        print(batch['example_a']['prompt_response_embedding'].shape)
+        print(batch['example_b']['prompt_embedding'].shape)
+        print(batch['example_b']['prompt_response_embedding'].shape)
         print(batch['preference_labels'].shape)
         print(batch['concept_labels'].shape)
         break
