@@ -86,6 +86,82 @@ class PreferenceDataset(Dataset):
         return len(self.pairs_data)
 
 
+
+class ExpandablePreferenceDataset(PreferenceDataset):
+    def __init__(
+            self, 
+            embeddings_path,
+            splits_path,
+            concept_labels_path,
+            preference_labels_path,
+            split='train',
+            num_initial_samples=0,
+        ):
+        super().__init__(
+            embeddings_path=embeddings_path,
+            splits_path=splits_path,
+            concept_labels_path=concept_labels_path,
+            preference_labels_path=preference_labels_path,
+            split=split
+        )
+        self.pool = self.pairs_data.copy()
+        self.used_pair_idx = []
+        initial_samples = list(np.random.choice(
+            self.pool.index,
+            size=num_initial_samples,
+            replace=False,
+        ))
+        self.pairs_data = pd.DataFrame()
+        self.build_dataset(initial_samples)
+
+    def build_dataset(self, added_pair_idx):
+        self.pairs_data = pd.concat([
+            self.pairs_data,
+            self.pool.loc[added_pair_idx]
+        ])
+        self.pool = self.pool[~self.pool.index.isin(self.used_pair_idx)]
+
+
+class ExpandableConceptPreferenceDataset(PreferenceDataset):
+    def __init__(
+            self, 
+            embeddings_path,
+            splits_path,
+            concept_labels_path,
+            preference_labels_path,
+            split='train',
+            num_initial_samples=0,
+        ):
+        super().__init__(
+            embeddings_path=embeddings_path,
+            splits_path=splits_path,
+            concept_labels_path=concept_labels_path,
+            preference_labels_path=preference_labels_path,
+            split=split
+        )
+        self.pool = self.pairs_data.copy()
+
+        nan_filter = [np.isnan(x) if isinstance(x, float) else x is None for x in self.pool['relative_concept_labels']]
+        nan_index = self.pool[nan_filter].index
+        self.pool.loc[nan_index, 'relative_concept_labels'] = None
+        self.pool.dropna(subset=['relative_concept_labels'], inplace=True)
+
+        self.used_pair_idx = []
+        initial_samples = list(np.random.choice(
+            self.pool.index,
+            size=num_initial_samples,
+            replace=False,
+        ))
+        self.pairs_data['relative_concept_labels'] = None
+        self.build_dataset(initial_samples)
+
+    def build_dataset(self, added_pair_idx):
+        self.pairs_data.loc[added_pair_idx, 'relative_concept_labels'] = self.pool.loc[added_pair_idx]['relative_concept_labels'].values
+        self.used_pair_idx += added_pair_idx
+        self.pool = self.pool[~self.pool.index.isin(self.used_pair_idx)]
+        print("Number of pairs with concept labels: ", len(self.pairs_data[self.pairs_data['relative_concept_labels'].notnull()]))
+
+
 def collate_example(example):
     return {
         'prompt_embedding': torch.stack([torch.tensor(x['prompt_embedding']) for x in example]),
@@ -147,14 +223,36 @@ if __name__ == '__main__':
         batch_size=4,
     )
     
-    dataloader = get_dataloader(cfg, split='train')
-    print(f'Number of batches: {len(dataloader)}')
+    # dataloader = get_dataloader(cfg, split='train')
+    # print(f'Number of batches: {len(dataloader)}')
+    # for batch in dataloader:
+    #     print(batch['example_a']['prompt_embedding'].shape)
+    #     print(batch['example_a']['prompt_response_embedding'].shape)
+    #     print(batch['example_b']['prompt_embedding'].shape)
+    #     print(batch['example_b']['prompt_response_embedding'].shape)
+    #     print(batch['preference_labels'].shape)
+    #     print(batch['concept_labels'].shape)
+    #     break
 
-    for batch in dataloader:
-        print(batch['example_a']['prompt_embedding'].shape)
-        print(batch['example_a']['prompt_response_embedding'].shape)
-        print(batch['example_b']['prompt_embedding'].shape)
-        print(batch['example_b']['prompt_response_embedding'].shape)
-        print(batch['preference_labels'].shape)
-        print(batch['concept_labels'].shape)
-        break
+    dataset = ExpandableConceptPreferenceDataset(
+        embeddings_path=cfg.embeddings_path,
+        splits_path=cfg.splits_path,
+        concept_labels_path=cfg.concept_labels_path,
+        preference_labels_path=cfg.preference_labels_path,
+        split='train',
+        num_initial_samples=0
+    )
+
+    added_pair_idx = list(np.random.choice(
+        dataset.pool.index,
+        size=10,
+        replace=False,
+    ))
+    dataset.build_dataset(added_pair_idx)
+
+    added_pair_idx = list(np.random.choice(
+        dataset.pool.index,
+        size=10,
+        replace=False,
+    ))
+    dataset.build_dataset(added_pair_idx)    

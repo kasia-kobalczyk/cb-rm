@@ -7,23 +7,24 @@ from tqdm import tqdm
 import sys
 import os
 import pandas as pd
+from torch.utils.data import DataLoader
 
-from src.data.dataloaders import get_dataloader, batch_to_device
+from src.data.dataloaders import *
 from src.models.reward_models import *
 
 
-class Trainer:
+class ActiveTrainer:
     def __init__(
             self, 
             cfg, 
             model,
-            train_dataloader,
+            train_dataset,
             val_dataloader,
             save_dir,
         ):
         self.cfg = cfg
         self.device = cfg.model.device
-        self.train_dataloader = train_dataloader
+        self.train_dataset = train_dataset
         self.val_dataloader = val_dataloader
         self.last_save_it = 0
         self.num_epochs = cfg.training.num_epochs
@@ -35,18 +36,39 @@ class Trainer:
         self.save_dir = save_dir
         self.eval_steps = cfg.training.eval_steps
         self.max_num_eval_steps = cfg.training.max_num_eval_steps
+        self.best_eval_metric = np.inf
+
+    def train_loop(self):
+        self.train_dataloader = DataLoader(
+            self.train_dataset,
+            batch_size=self.cfg.data.batch_size,
+            shuffle=True,
+            collate_fn=collate_fn,
+        )
+        print(f"Starting training with {len(self.train_dataset)} pairs")
+        for episode in range(self.cfg.training.num_episodes):
+            print(f"Episode {episode}/{self.cfg.training.num_episodes}")
+            # Run one episode of training
+            best_eval_metric = self.train_episode()
+            print(f"Best eval metric afer episode {episode}: {best_eval_metric:.3f}")
+            # Query new data
+            added_pair_idx = self.query_new_data()
+            len_train_dataset = len(self.train_dataset) 
+            self.train_dataset.build_dataset(added_pair_idx)
+            self.train_dataloader = DataLoader(
+                self.train_dataset,
+                batch_size=self.cfg.data.batch_size,
+                shuffle=True,
+                collate_fn=collate_fn,
+            )
+            print(f"Added {len(added_pair_idx)} to the training set")
+            print(f"New training set size: {len(self.train_dataset)}")
+            # Load the best model and optimizer: # TO DO: may instead train from scratch (?)
+            self.model.load_state_dict(torch.load(f"{self.save_dir}/model_best.pt"))
+            self.optimizer.load_state_dict(torch.load(f"{self.save_dir}/optim_best.pt"))
 
 
-    def run_batch(self, batch):
-        batch = batch_to_device(batch, self.device)
-        results = self.model(batch)
-
-        results['loss'] = self.cfg.loss.beta * results['preference_loss'] + (1 - self.cfg.loss.beta) * results['concept_loss']
-
-        return results
-    
-
-    def train(self):
+    def train_episode(self):
         training_metrics = [
             'loss', 'preference_accuracy', 'concept_pseudo_accuracy', 'preference_loss', 'concept_loss'
         ]
@@ -55,9 +77,9 @@ class Trainer:
         ]
         eval_stopping_metric = 'preference_accuracy'
         it = 0
-        best_eval_metric = np.inf
-        for epoch in range(self.num_epochs + 1):
-            print(f"Epoch {epoch}/{self.num_epochs}")
+        best_eval_metric = self.best_eval_metric
+        for epoch in range(self.num_epochs):
+            print(f"Epoch {epoch + 1}/{self.num_epochs}")
             for batch in tqdm(self.train_dataloader):
                 self.model.train()
                 self.optimizer.zero_grad()
@@ -68,15 +90,12 @@ class Trainer:
                 if not self.cfg.training.dry_run:
                     wandb.log(
                         {'train_' + k: results[k] for k in training_metrics},
-                        step=self.last_save_it + it,
                     )
-
                 if it % self.eval_steps == 0 and it > 0:
                     val_results = self.eval(eval_metrics, dataloader='val', max_steps=self.max_num_eval_steps)
                     if not self.cfg.training.dry_run:
                         wandb.log(
                             {'val_' + k: val_results[k] for k in eval_metrics},
-                            step=self.last_save_it + it,
                         )
                         eval_metric_value = val_results[eval_stopping_metric]
                         if 'accuracy' in eval_stopping_metric:
@@ -85,7 +104,7 @@ class Trainer:
                             best_eval_metric =  eval_metric_value
 
                             state_dict_save = self.model.state_dict()
-
+                            # Save best model and optimizer
                             torch.save(state_dict_save, f"{self.save_dir}/model_best.pt")
                             torch.save(
                                 self.optimizer.state_dict(),
@@ -94,8 +113,47 @@ class Trainer:
                             print(f"Best model saved at step {self.last_save_it + it}")
                 it += 1
         
+        final_val_results = self.eval(eval_metrics, dataloader='val', max_steps=self.max_num_eval_steps)
+        if not self.cfg.training.dry_run:
+            wandb.log(
+                {'val_' + k: final_val_results[k] for k in eval_metrics},
+            )
+            eval_metric_value = final_val_results[eval_stopping_metric]
+            if 'accuracy' in eval_stopping_metric:
+                eval_metric_value = -eval_metric_value
+            if eval_metric_value < best_eval_metric:
+                best_eval_metric =  eval_metric_value
+
+                state_dict_save = self.model.state_dict()
+
+                torch.save(state_dict_save, f"{self.save_dir}/model_best.pt")
+                torch.save(
+                    self.optimizer.state_dict(),
+                    f"{self.save_dir}/optim_best.pt",
+                )
+                print(f"Best model saved at step {self.last_save_it + it}")
+
+        self.best_eval_metric = best_eval_metric
+
         return best_eval_metric
 
+    def run_batch(self, batch):
+        batch = batch_to_device(batch, self.device)
+        results = self.model(batch)
+        results['loss'] = self.cfg.loss.beta * results['preference_loss'] + (1 - self.cfg.loss.beta) * results['concept_loss']
+        return results
+
+    def query_new_data(self):
+        if self.cfg.training.acquisition_function == "uniform":
+            added_pair_idx = self.train_dataset.pool.sample(
+                n=min(self.cfg.training.num_acquired_samples, len(self.train_dataset.pool)), 
+                random_state=self.cfg.training.seed
+            ).index.tolist()
+        else:
+            raise NotImplementedError(
+                f"Acquisition function {self.cfg.training.acquisition_func} not implemented"
+            )
+        return added_pair_idx
 
     def eval(self, metrics, dataloader, max_steps):
         print(f"Evaluating on {dataloader} data")
@@ -120,14 +178,20 @@ class Trainer:
                 eval_results[k] = torch.mean(torch.tensor(eval_results[k])).item()
 
         return eval_results
-
-
+    
 
 def setup_trainer(cfg, save_dir=None):
-    train_dataloader = get_dataloader(cfg.data, split='train')
-    val_dataloader = get_dataloader(cfg.data, split='val')
+    train_dataset = ExpandableConceptPreferenceDataset(
+        embeddings_path=cfg.data.embeddings_path,
+        splits_path=cfg.data.splits_path,
+        concept_labels_path=cfg.data.concept_labels_path,
+        preference_labels_path=cfg.data.preference_labels_path,
+        split='train',
+        num_initial_samples=cfg.training.num_initial_samples,
+    )
 
-    num_concepts = len(train_dataloader.dataset.concept_names)
+    val_dataloader = get_dataloader(cfg.data, split='val')
+    num_concepts = len(train_dataset.concept_names)
 
     if cfg.model.encoder == "simple":
         concept_encoder = SimpleConceptEncoder(
@@ -150,10 +214,10 @@ def setup_trainer(cfg, save_dir=None):
     )
     model.to(cfg.model.device)
 
-    trainer = Trainer(
+    trainer = ActiveTrainer(
         cfg=cfg,
         model=model,
-        train_dataloader=train_dataloader,
+        train_dataset=train_dataset,
         val_dataloader=val_dataloader,
         save_dir=save_dir,
     )
@@ -161,7 +225,7 @@ def setup_trainer(cfg, save_dir=None):
     return trainer
 
 
-@hydra.main(version_base=None, config_path=f"../configs", config_name="config")
+@hydra.main(version_base=None, config_path=f"../configs", config_name="active_config")
 def train(cfg):
     
     np.random.seed(cfg.training.seed)
@@ -202,12 +266,12 @@ def train(cfg):
             project=cfg.save.project_name, name=f"{run_name_prefix}_{save_no}"
         )
     
-        best_eval_loss = trainer.train()
+        best_eval_loss = trainer.train_loop()
         wandb.finish()
     
     else:
         trainer = setup_trainer(cfg)
-        best_eval_loss = trainer.train()
+        best_eval_loss = trainer.train_loop()
     
     return best_eval_loss
 
