@@ -8,6 +8,7 @@ import sys
 import os
 import pandas as pd
 from torch.utils.data import DataLoader
+import random 
 
 from src.data.dataloaders import *
 from src.models.reward_models import *
@@ -52,17 +53,15 @@ class ActiveTrainer:
             best_eval_metric = self.train_episode()
             print(f"Best eval metric afer episode {episode}: {best_eval_metric:.3f}")
             # Query new data
-            added_pair_idx = self.query_new_data()
-            len_train_dataset = len(self.train_dataset) 
-            self.train_dataset.build_dataset(added_pair_idx)
+            added_idx = self.query_new_data()
+            self.train_dataset.build_dataset(added_idx)
             self.train_dataloader = DataLoader(
                 self.train_dataset,
                 batch_size=self.cfg.data.batch_size,
                 shuffle=True,
                 collate_fn=collate_fn,
             )
-            print(f"Added {len(added_pair_idx)} to the training set")
-            print(f"New training set size: {len(self.train_dataset)}")
+            print(f"Added {len(added_idx)} concept labels to the training set")
             # Load the best model and optimizer: # TO DO: may instead train from scratch (?)
             self.model.load_state_dict(torch.load(f"{self.save_dir}/model_best.pt"))
             self.optimizer.load_state_dict(torch.load(f"{self.save_dir}/optim_best.pt"))
@@ -145,15 +144,15 @@ class ActiveTrainer:
 
     def query_new_data(self):
         if self.cfg.training.acquisition_function == "uniform":
-            added_pair_idx = self.train_dataset.pool.sample(
-                n=min(self.cfg.training.num_acquired_samples, len(self.train_dataset.pool)), 
-                random_state=self.cfg.training.seed
-            ).index.tolist()
+            added_idx = random.sample(
+                list(self.train_dataset.pool_index),
+                self.cfg.training.num_acquired_samples
+            )
         else:
             raise NotImplementedError(
                 f"Acquisition function {self.cfg.training.acquisition_func} not implemented"
             )
-        return added_pair_idx
+        return added_idx
 
     def eval(self, metrics, dataloader, max_steps):
         print(f"Evaluating on {dataloader} data")
@@ -228,9 +227,11 @@ def setup_trainer(cfg, save_dir=None):
 @hydra.main(version_base=None, config_path=f"../configs", config_name="active_config")
 def train(cfg):
     
+    # Set random seed
     np.random.seed(cfg.training.seed)
     torch.manual_seed(cfg.training.seed)
     torch.cuda.manual_seed(cfg.training.seed)
+    random.seed(cfg.training.seed)
     
     if not cfg.training.dry_run:
         # Create save folder and save cfg

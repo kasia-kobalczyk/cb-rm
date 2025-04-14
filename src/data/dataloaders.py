@@ -3,6 +3,7 @@ from datasets import load_from_disk
 import pandas as pd
 import torch 
 import numpy as np
+import random
 
 class PreferenceDataset(Dataset):
     def __init__(
@@ -139,28 +140,40 @@ class ExpandableConceptPreferenceDataset(PreferenceDataset):
             preference_labels_path=preference_labels_path,
             split=split
         )
-        self.pool = self.pairs_data.copy()
+        self.labelled_data = self.pairs_data.copy()
 
-        nan_filter = [np.isnan(x) if isinstance(x, float) else x is None for x in self.pool['relative_concept_labels']]
-        nan_index = self.pool[nan_filter].index
-        self.pool.loc[nan_index, 'relative_concept_labels'] = None
-        self.pool.dropna(subset=['relative_concept_labels'], inplace=True)
+        # Filter nan values in the relative_concept_labels column of the labelled pool
+        nan_filter = [np.isnan(x) if isinstance(x, float) else x is None for x in self.labelled_data['relative_concept_labels']]
+        nan_index = self.labelled_data[nan_filter].index
+        self.labelled_data.loc[nan_index, 'relative_concept_labels'] = None
+        self.labelled_data.dropna(subset=['relative_concept_labels'], inplace=True)
 
-        self.used_pair_idx = []
-        initial_samples = list(np.random.choice(
-            self.pool.index,
-            size=num_initial_samples,
-            replace=False,
-        ))
-        self.pairs_data['relative_concept_labels'] = None
+        self.pool_index = []
+        for i in self.labelled_data.index:
+            self.pool_index += [(i, k) for k in range(len(self.concept_names)) if self.labelled_data.loc[i, 'relative_concept_labels'][k] != -1.0]
+        self.pool_index = set(self.pool_index)
+
+        # Mask all concept labels
+        self.pairs_data['relative_concept_labels'] = list(np.ones(((len(self.pairs_data), len(self.concept_names)))) * -1.0)
+        
+        # Add initial samples
+        initial_samples = list(random.sample(list(self.pool_index), num_initial_samples))
         self.build_dataset(initial_samples)
 
-    def build_dataset(self, added_pair_idx):
-        self.pairs_data.loc[added_pair_idx, 'relative_concept_labels'] = self.pool.loc[added_pair_idx]['relative_concept_labels'].values
-        self.used_pair_idx += added_pair_idx
-        self.pool = self.pool[~self.pool.index.isin(self.used_pair_idx)]
-        print("Number of pairs with concept labels: ", len(self.pairs_data[self.pairs_data['relative_concept_labels'].notnull()]))
-
+        
+    def build_dataset(self, added_idx):
+        """
+        added_idx = [(instance_idx, conecpt_idx), ...]
+        """
+        for idx in added_idx:
+            instance_idx, concept_idx = idx
+            current_concept_labels = self.pairs_data.loc[instance_idx, 'relative_concept_labels']
+            true_concept_labels = self.labelled_data.loc[instance_idx, 'relative_concept_labels']
+            updated_concept_labels = current_concept_labels.copy()
+            updated_concept_labels[concept_idx] = true_concept_labels[concept_idx]
+            self.pairs_data.at[instance_idx, 'relative_concept_labels'] = updated_concept_labels
+            self.pool_index.remove(idx)        
+        
 
 def collate_example(example):
     return {
@@ -241,18 +254,13 @@ if __name__ == '__main__':
         preference_labels_path=cfg.preference_labels_path,
         split='train',
         num_initial_samples=0
-    )
-
-    added_pair_idx = list(np.random.choice(
-        dataset.pool.index,
-        size=10,
-        replace=False,
-    ))
-    dataset.build_dataset(added_pair_idx)
-
-    added_pair_idx = list(np.random.choice(
-        dataset.pool.index,
-        size=10,
-        replace=False,
-    ))
-    dataset.build_dataset(added_pair_idx)    
+    )    
+    print(len(dataset.pool_index))
+    
+    added_idx = list(random.sample(list(dataset.pool_index), 10))
+    dataset.build_dataset(added_idx)
+    print(len(dataset.pool_index))
+    
+    added_idx = list(random.sample(list(dataset.pool_index), 10))
+    dataset.build_dataset(added_idx)    
+    print(len(dataset.pool_index))
