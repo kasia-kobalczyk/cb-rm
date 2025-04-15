@@ -7,7 +7,7 @@ from tqdm import tqdm
 import sys
 import os
 import pandas as pd
-
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from src.data.dataloaders import get_dataloader, batch_to_device
 from src.models.reward_models import *
 
@@ -207,6 +207,9 @@ def train(cfg):
                 save_no = max(save_no) + 1
             else:
                 save_no = 0
+            save_dir = os.path.join(save_dir, f"{run_name_prefix}_{save_no}")
+        else:
+            save_no = 0
             save_dir = os.path.join(save_dir, f"{run_name_prefix}_{save_no}")
         
         trainer = setup_trainer(cfg, save_dir=save_dir)

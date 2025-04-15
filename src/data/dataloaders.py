@@ -177,8 +177,8 @@ class ExpandableConceptPreferenceDataset(PreferenceDataset):
 
 def collate_example(example):
     return {
-        'prompt_embedding': torch.stack([torch.tensor(x['prompt_embedding']) for x in example]),
-        'prompt_response_embedding': torch.stack([torch.tensor(x['prompt_response_embedding']) for x in example]),
+        'prompt_embedding': torch.stack([torch.tensor(x['prompt_embedding'], dtype=torch.float32) for x in example]),
+        'prompt_response_embedding': torch.stack([torch.tensor(x['prompt_response_embedding'], dtype=torch.float32) for x in example]),
     }
 
 def collate_fn(batch):
