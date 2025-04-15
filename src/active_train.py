@@ -3,241 +3,36 @@ from omegaconf import DictConfig, OmegaConf
 import torch
 import wandb
 import numpy as np
-from tqdm import tqdm
 import sys
 import os
-import pandas as pd
-from torch.utils.data import DataLoader
 import random 
+from hydra.utils import instantiate
+from copy import deepcopy
+
+# Add the src folder to path
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
-from src.data.dataloaders import *
 from src.models.reward_models import *
+from src.utils.training import ActiveTrainer
 
-
-class ActiveTrainer:
-    def __init__(
-            self, 
-            cfg, 
-            model,
-            train_dataset,
-            val_dataloader,
-            save_dir,
-        ):
-        self.cfg = cfg
-        self.device = cfg.model.device
-        self.train_dataset = train_dataset
-        self.val_dataloader = val_dataloader
-        self.last_save_it = 0
-        self.num_epochs = cfg.training.num_epochs
-        self.model = model
-        self.model.to(self.device)
-        self.optimizer = torch.optim.Adam(
-            self.model.parameters(), lr=cfg.training.lr, eps=3e-5
-        )
-        self.save_dir = save_dir
-        self.eval_steps = cfg.training.eval_steps
-        self.max_num_eval_steps = cfg.training.max_num_eval_steps
-        self.best_eval_metric = np.inf
-
-        self.training_metrics = [
-            'loss', 'preference_accuracy', 'concept_pseudo_accuracy', 'preference_loss', 'concept_loss'
-        ]
-
-        if self.cfg.model.model_type == "probabilistic":
-            self.training_metrics.append('kl_loss')
-
-        self.eval_metrics = [
-            'preference_accuracy', 'concept_pseudo_accuracy'
-        ]
-
-    def train_loop(self):
-        self.train_dataloader = DataLoader(
-            self.train_dataset,
-            batch_size=self.cfg.data.batch_size,
-            shuffle=True,
-            collate_fn=collate_fn,
-        )
-        print(f"Starting training with {len(self.train_dataset)} pairs")
-        for episode in range(self.cfg.training.num_episodes):
-            print(f"Episode {episode}/{self.cfg.training.num_episodes}")
-            # Run one episode of training
-            best_eval_metric = self.train_episode()
-            print(f"Best eval metric afer episode {episode}: {best_eval_metric:.3f}")
-            # Query new data
-            added_idx = self.query_new_data()
-            self.train_dataset.build_dataset(added_idx)
-            self.train_dataloader = DataLoader(
-                self.train_dataset,
-                batch_size=self.cfg.data.batch_size,
-                shuffle=True,
-                collate_fn=collate_fn,
-            )
-            print(f"Added {len(added_idx)} concept labels to the training set")
-            # Load the best model and optimizer: # TO DO: may instead train from scratch (?)
-            self.model.load_state_dict(torch.load(f"{self.save_dir}/model_best.pt"))
-            self.optimizer.load_state_dict(torch.load(f"{self.save_dir}/optim_best.pt"))
-
-
-    def train_episode(self):
-        eval_stopping_metric = 'preference_accuracy'
-        it = 0
-        best_eval_metric = self.best_eval_metric
-        for epoch in range(self.num_epochs):
-            print(f"Epoch {epoch + 1}/{self.num_epochs}")
-            for batch in tqdm(self.train_dataloader):
-                self.model.train()
-                self.optimizer.zero_grad()
-                results = self.run_batch(batch)
-                loss = results["loss"]
-                loss.backward()
-                self.optimizer.step()
-                if not self.cfg.training.dry_run:
-                    wandb.log(
-                        {'train_' + k: results[k] for k in self.training_metrics},
-                    )
-                if it % self.eval_steps == 0 and it > 0:
-                    val_results = self.eval(self.eval_metrics, dataloader='val', max_steps=self.max_num_eval_steps)
-                    if not self.cfg.training.dry_run:
-                        wandb.log(
-                            {'val_' + k: val_results[k] for k in self.eval_metrics},
-                        )
-                        eval_metric_value = val_results[eval_stopping_metric]
-                        if 'accuracy' in eval_stopping_metric:
-                            eval_metric_value = -eval_metric_value
-                        if eval_metric_value < best_eval_metric:
-                            best_eval_metric =  eval_metric_value
-
-                            state_dict_save = self.model.state_dict()
-                            # Save best model and optimizer
-                            torch.save(state_dict_save, f"{self.save_dir}/model_best.pt")
-                            torch.save(
-                                self.optimizer.state_dict(),
-                                f"{self.save_dir}/optim_best.pt",
-                            )
-                            print(f"Best model saved at step {self.last_save_it + it}")
-                it += 1
-        
-        final_val_results = self.eval(self.eval_metrics, dataloader='val', max_steps=self.max_num_eval_steps)
-        if not self.cfg.training.dry_run:
-            wandb.log(
-                {'val_' + k: final_val_results[k] for k in self.eval_metrics},
-            )
-            eval_metric_value = final_val_results[eval_stopping_metric]
-            if 'accuracy' in eval_stopping_metric:
-                eval_metric_value = -eval_metric_value
-            if eval_metric_value < best_eval_metric:
-                best_eval_metric =  eval_metric_value
-
-                state_dict_save = self.model.state_dict()
-
-                torch.save(state_dict_save, f"{self.save_dir}/model_best.pt")
-                torch.save(
-                    self.optimizer.state_dict(),
-                    f"{self.save_dir}/optim_best.pt",
-                )
-                print(f"Best model saved at step {self.last_save_it + it}")
-
-        self.best_eval_metric = best_eval_metric
-
-        return best_eval_metric
-
-    def run_batch(self, batch):
-        batch = batch_to_device(batch, self.device)
-        results = self.model(batch)
-        results['loss'] = results['preference_loss'] + self.cfg.loss.beta_concept * results['concept_loss'] 
-        
-        if 'kl_loss' in results:
-            results['loss'] += self.cfg.loss.beta_kl * results['kl_loss']
-            
-        return results
-
-    def query_new_data(self):
-        if self.cfg.training.acquisition_function == "uniform":
-            added_idx = random.sample(
-                list(self.train_dataset.pool_index),
-                self.cfg.training.num_acquired_samples
-            )
-        else:
-            raise NotImplementedError(
-                f"Acquisition function {self.cfg.training.acquisition_func} not implemented"
-            )
-        return added_idx
-
-    def eval(self, metrics, dataloader, max_steps):
-        print(f"Evaluating on {dataloader} data")
-        if dataloader == 'val':
-            dataloader = self.val_dataloader
-        
-        eval_results = {}
-        for k in metrics:
-            eval_results[k] = []
-        it = 0
-        self.model.eval()
-        with torch.no_grad():
-            for batch in dataloader:
-                results = self.run_batch(batch)
-                for k in metrics:
-                    eval_results[k].append(results[k])
-                it += 1
-                if it > max_steps:
-                    break
-                        
-            for k in metrics:
-                eval_results[k] = torch.mean(torch.tensor(eval_results[k])).item()
-
-        return eval_results
-    
 
 def setup_trainer(cfg, save_dir=None):
-    train_dataset = ExpandableConceptPreferenceDataset(
-        embeddings_path=cfg.data.embeddings_path,
-        splits_path=cfg.data.splits_path,
-        concept_labels_path=cfg.data.concept_labels_path,
-        preference_labels_path=cfg.data.preference_labels_path,
-        split='train',
-        num_initial_samples=cfg.training.num_initial_samples,
-    )
-
-    val_dataloader = get_dataloader(cfg.data, split='val')
+    # Create datasets 
+    train_dataset = instantiate(cfg.train_dataset)
+    val_dataloader = instantiate(cfg.val_dataloader)
+    
+    # Set output dimensions dynamically
     num_concepts = len(train_dataset.concept_names)
-
-    gating_network = GatingNetwork(
-        input_dim=cfg.model.input_dim,
-        output_dim=num_concepts,
-    )
-
-    if cfg.model.model_type == "probabilistic" and cfg.model.concept_sampler in ["gaussian"]:
-        output_dim = 2 * num_concepts
-    else:
-        output_dim = num_concepts
-
-    concept_encoder = MLP(
-        input_dim=cfg.model.input_dim,
-        output_dim=output_dim,
-        num_layers=cfg.model.encoder_num_layers,
-        hidden_dim=None if cfg.model.encoder_num_layers == 0 else cfg.model.encoder_hidden_dim,
-    )
-
-    if cfg.model.model_type == "deterministic":
-        model = BottleneckRewardModel(
-            concept_encoder=concept_encoder,
-            gating_network=gating_network,
-        )
-
-    elif cfg.model.model_type == "probabilistic":
-        model = ProbabilisticBottleneckRewardModel(
-            concept_encoder=concept_encoder,
-            gating_network=gating_network,
-            concept_sampler=cfg.model.concept_sampler,
-        )
-
-    else:
-        raise NotImplementedError(
-            f"Model type {cfg.model.model_type} not implemented"
-        )
-
+    cfg.model_builder.concept_encoder.output_dim = 2 * num_concepts if cfg.model_type == "probabilistic" else num_concepts
+    cfg.model_builder.gating_network.output_dim = num_concepts
+    # Workaround for the concept sampler: Cleaner if yaml split in two
+    model_builder_cfg = deepcopy(cfg.model_builder)
+    if cfg.model_type == "deterministic": OmegaConf.set_struct(model_builder_cfg, False); del model_builder_cfg["concept_sampler"]
+    
+    # Create model
+    model = instantiate(model_builder_cfg)
     model.to(cfg.model.device)
-
+    
+    # Create Trainer
     trainer = ActiveTrainer(
         cfg=cfg,
         model=model,
@@ -248,7 +43,6 @@ def setup_trainer(cfg, save_dir=None):
     
     return trainer
 
-
 @hydra.main(version_base=None, config_path=f"../configs", config_name="active_config")
 def train(cfg: DictConfig):
 
@@ -257,26 +51,22 @@ def train(cfg: DictConfig):
     torch.manual_seed(cfg.training.seed)
     torch.cuda.manual_seed(cfg.training.seed)
     random.seed(cfg.training.seed)
-    
+
     if not cfg.training.dry_run:
         # Create save folder and save cfg
         run_name_prefix = cfg.save.run_name_prefix if cfg.save.run_name_prefix else "run"
         save_dir = f"./saves/{cfg.save.project_name}"
         if os.path.exists(save_dir):
-            save_no = [
-                int(x.split("_")[-1])
-                for x in os.listdir(save_dir)
-                if x.startswith(run_name_prefix)
-            ]
+            save_no = [int(x.split("_")[-1]) for x in os.listdir(save_dir) if x.startswith(run_name_prefix)]
             save_no = max(save_no) + 1 if len(save_no) > 0 else 0
         else:
             save_no = 0
         save_dir = os.path.join(save_dir, f"{run_name_prefix}_{save_no}")
         os.makedirs(save_dir, exist_ok=True)
-        trainer = setup_trainer(cfg, save_dir=save_dir)
 
-        # Save cfg
+        trainer = setup_trainer(cfg, save_dir)
         cfg = trainer.cfg
+        # Save config
         with open(f"{save_dir}/config.yaml", "w") as f:
             OmegaConf.save(cfg, f)
             
@@ -287,7 +77,7 @@ def train(cfg: DictConfig):
         wandb.init(
             project=cfg.save.project_name, entity=cfg.save.wandb_entity, name=f"{run_name_prefix}_{save_no}"
         )
-    
+
         best_eval_loss = trainer.train_loop()
         wandb.finish()
     

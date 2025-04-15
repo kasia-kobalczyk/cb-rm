@@ -1,9 +1,9 @@
 model:
-  model_type: deterministic 
   encoder_num_layers: 1
   encoder_hidden_dim: 512
   input_dim: 4096        
   device: cuda:0           
+model_type: deterministic  # 'probabilistic'  or 'deterministic'            
 
 training:
   num_epochs: 10
@@ -15,7 +15,7 @@ training:
 
 loss:
   beta_concept: 1.0              # Weight for concept_loss in total loss
-
+  beta_kl: 0.001
 
 save:
   project_name: active_pref_learning
@@ -28,4 +28,31 @@ data:
   concept_labels_path: './datasets/ultrafeedback/concept_labels/openbmb' 
   preference_labels_path: './datasets/ultrafeedback/preference_labels/openbmb_average'
   batch_size: 1024
-  
+
+train_dataloader:
+  _target_: src.data.dataloaders.get_dataloader
+  cfg: ${data}
+  split: train
+
+val_dataloader:
+  _target_: src.data.dataloaders.get_dataloader
+  cfg: ${data}
+  split: val
+
+resolve_model_target:
+  deterministic: src.models.reward_models.BottleneckRewardModel
+  probabilistic: src.models.reward_models.ProbabilisticBottleneckRewardModel
+
+model_builder:
+  _target_: ${resolve_model_target.${model_type}}
+  concept_encoder:
+    _target_: src.models.reward_models.MLP
+    input_dim: ${model.input_dim}
+    output_dim: null  # will be set dynamically
+    hidden_dim: ${model.encoder_hidden_dim}
+    num_layers: ${model.encoder_num_layers}
+  gating_network:
+    _target_: src.models.reward_models.GatingNetwork
+    input_dim: ${model.input_dim}
+    output_dim: null  # will be set dynamically
+  concept_sampler: gaussian  # used only if probabilistic
