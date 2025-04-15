@@ -250,8 +250,8 @@ def setup_trainer(cfg, save_dir=None):
 
 
 @hydra.main(version_base=None, config_path=f"../configs", config_name="active_config")
-def train(cfg):
-    
+def train(cfg: DictConfig):
+
     # Set random seed
     np.random.seed(cfg.training.seed)
     torch.manual_seed(cfg.training.seed)
@@ -263,24 +263,17 @@ def train(cfg):
         run_name_prefix = cfg.save.run_name_prefix if cfg.save.run_name_prefix else "run"
         save_dir = f"./saves/{cfg.save.project_name}"
         if os.path.exists(save_dir):
-            save_no = len(os.listdir(save_dir))
             save_no = [
                 int(x.split("_")[-1])
                 for x in os.listdir(save_dir)
                 if x.startswith(run_name_prefix)
             ]
-            if len(save_no) > 0:
-                save_no = max(save_no) + 1
-            else:
-                save_no = 0
-            save_dir = os.path.join(save_dir, f"{run_name_prefix}_{save_no}")
+            save_no = max(save_no) + 1 if len(save_no) > 0 else 0
         else:
             save_no = 0
-            save_dir = os.path.join(save_dir, f"{run_name_prefix}_{save_no}")
-        
-        trainer = setup_trainer(cfg, save_dir=save_dir)
-
+        save_dir = os.path.join(save_dir, f"{run_name_prefix}_{save_no}")
         os.makedirs(save_dir, exist_ok=True)
+        trainer = setup_trainer(cfg, save_dir=save_dir)
 
         # Save cfg
         cfg = trainer.cfg
@@ -308,6 +301,6 @@ def train(cfg):
 
 if __name__ == "__main__":
     train()
-    
+
 
     
