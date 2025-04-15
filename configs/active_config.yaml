@@ -24,6 +24,7 @@ loss:
 
 save:
   project_name: active_pref_learning
+  wandb_entity: interp_rewards_RLHF
   run_name_prefix: active_learning_crm
 data:
   embeddings_path: './datasets/ultrafeedback/embeddings/meta-llama/Meta-Llama-3-8B/'

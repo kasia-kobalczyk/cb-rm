@@ -226,7 +226,7 @@ def train(cfg):
             cfg, resolve=True, throw_on_missing=True
         )
         wandb.init(
-            project=cfg.save.project_name, name=f"{run_name_prefix}_{save_no}"
+            project=cfg.save.project_name, entity=cfg.save.wandb_entity, name=f"{run_name_prefix}_{save_no}"
         )
     
         best_eval_loss = trainer.train()

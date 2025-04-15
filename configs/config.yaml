@@ -19,6 +19,7 @@ loss:
 
 save:
   project_name: active_pref_learning
+  wandb_entity: interp_rewards_RLHF
   run_name_prefix: deterministic_crm
 
 data:
