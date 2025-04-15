@@ -32,7 +32,7 @@ def build_rating_chat(system_prompt, user_prompt, response_a, response_b, concep
     concept_str = ", ".join(concepts)
     instruction = (
         f"Rate which of the two assistant responses is better for each of the following concepts: {concept_str}.\n"
-        f"Provide your confidence score on the scale fron 0 to 1 per each concept, where 0 means the first response is clearly better and 1 that the second response is clearly better.\n"
+        f"Provide your confidence score on the scale from 0 to 1 per each concept, where 0 means the first response is clearly better and 1 that the second response is clearly better.\n"
         f"Respond strictly in JSON format without any explanation.\n"
         f"Example:\n"
         f"{{\n"

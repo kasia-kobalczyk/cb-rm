@@ -1,7 +1,8 @@
 model:
-  model_type: deterministic 
+  model_type: probabilistic
   encoder_num_layers: 1
   encoder_hidden_dim: 512
+  concept_sampler: gaussian
   input_dim: 4096        
   device: cuda:0           
 
@@ -14,12 +15,12 @@ training:
   dry_run: False         # Set to true to skip wandb logging and saving
 
 loss:
-  beta_concept: 1.0              # Weight for concept_loss in total loss
-
+  beta_concept: 1.0              # Weight for concept loss in total loss
+  beta_kl: 0.001  
 
 save:
   project_name: active_pref_learning
-  run_name_prefix: deterministic_crm
+  run_name_prefix: probabilistic_crm
 
 data:
   embeddings_path: './datasets/ultrafeedback/embeddings/meta-llama/Meta-Llama-3-8B/'

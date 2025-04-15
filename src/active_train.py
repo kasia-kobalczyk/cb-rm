@@ -39,6 +39,17 @@ class ActiveTrainer:
         self.max_num_eval_steps = cfg.training.max_num_eval_steps
         self.best_eval_metric = np.inf
 
+        self.training_metrics = [
+            'loss', 'preference_accuracy', 'concept_pseudo_accuracy', 'preference_loss', 'concept_loss'
+        ]
+
+        if self.cfg.model.model_type == "probabilistic":
+            self.training_metrics.append('kl_loss')
+
+        self.eval_metrics = [
+            'preference_accuracy', 'concept_pseudo_accuracy'
+        ]
+
     def train_loop(self):
         self.train_dataloader = DataLoader(
             self.train_dataset,
@@ -68,12 +79,6 @@ class ActiveTrainer:
 
 
     def train_episode(self):
-        training_metrics = [
-            'loss', 'preference_accuracy', 'concept_pseudo_accuracy', 'preference_loss', 'concept_loss'
-        ]
-        eval_metrics = [
-            'preference_accuracy', 'concept_pseudo_accuracy'
-        ]
         eval_stopping_metric = 'preference_accuracy'
         it = 0
         best_eval_metric = self.best_eval_metric
@@ -88,13 +93,13 @@ class ActiveTrainer:
                 self.optimizer.step()
                 if not self.cfg.training.dry_run:
                     wandb.log(
-                        {'train_' + k: results[k] for k in training_metrics},
+                        {'train_' + k: results[k] for k in self.training_metrics},
                     )
                 if it % self.eval_steps == 0 and it > 0:
-                    val_results = self.eval(eval_metrics, dataloader='val', max_steps=self.max_num_eval_steps)
+                    val_results = self.eval(self.eval_metrics, dataloader='val', max_steps=self.max_num_eval_steps)
                     if not self.cfg.training.dry_run:
                         wandb.log(
-                            {'val_' + k: val_results[k] for k in eval_metrics},
+                            {'val_' + k: val_results[k] for k in self.eval_metrics},
                         )
                         eval_metric_value = val_results[eval_stopping_metric]
                         if 'accuracy' in eval_stopping_metric:
@@ -112,10 +117,10 @@ class ActiveTrainer:
                             print(f"Best model saved at step {self.last_save_it + it}")
                 it += 1
         
-        final_val_results = self.eval(eval_metrics, dataloader='val', max_steps=self.max_num_eval_steps)
+        final_val_results = self.eval(self.eval_metrics, dataloader='val', max_steps=self.max_num_eval_steps)
         if not self.cfg.training.dry_run:
             wandb.log(
-                {'val_' + k: final_val_results[k] for k in eval_metrics},
+                {'val_' + k: final_val_results[k] for k in self.eval_metrics},
             )
             eval_metric_value = final_val_results[eval_stopping_metric]
             if 'accuracy' in eval_stopping_metric:
@@ -139,7 +144,11 @@ class ActiveTrainer:
     def run_batch(self, batch):
         batch = batch_to_device(batch, self.device)
         results = self.model(batch)
-        results['loss'] = self.cfg.loss.beta * results['preference_loss'] + (1 - self.cfg.loss.beta) * results['concept_loss']
+        results['loss'] = results['preference_loss'] + self.cfg.loss.beta_concept * results['concept_loss'] 
+        
+        if 'kl_loss' in results:
+            results['loss'] += self.cfg.loss.beta_kl * results['kl_loss']
+            
         return results
 
     def query_new_data(self):
@@ -192,25 +201,41 @@ def setup_trainer(cfg, save_dir=None):
     val_dataloader = get_dataloader(cfg.data, split='val')
     num_concepts = len(train_dataset.concept_names)
 
-    if cfg.model.encoder == "simple":
-        concept_encoder = SimpleConceptEncoder(
-            input_dim=cfg.model.input_dim,
-            output_dim=num_concepts,
-        )
-    else:
-        raise NotImplementedError(
-            f"Encoder {cfg.model.encoder} not implemented"
-        )
-
     gating_network = GatingNetwork(
         input_dim=cfg.model.input_dim,
         output_dim=num_concepts,
     )
 
-    model = BottleneckRewardModel(
-        concept_encoder=concept_encoder,
-        gating_network=gating_network,
+    if cfg.model.model_type == "probabilistic" and cfg.model.concept_sampler in ["gaussian"]:
+        output_dim = 2 * num_concepts
+    else:
+        output_dim = num_concepts
+
+    concept_encoder = MLP(
+        input_dim=cfg.model.input_dim,
+        output_dim=output_dim,
+        num_layers=cfg.model.encoder_num_layers,
+        hidden_dim=None if cfg.model.encoder_num_layers == 0 else cfg.model.encoder_hidden_dim,
     )
+
+    if cfg.model.model_type == "deterministic":
+        model = BottleneckRewardModel(
+            concept_encoder=concept_encoder,
+            gating_network=gating_network,
+        )
+
+    elif cfg.model.model_type == "probabilistic":
+        model = ProbabilisticBottleneckRewardModel(
+            concept_encoder=concept_encoder,
+            gating_network=gating_network,
+            concept_sampler=cfg.model.concept_sampler,
+        )
+
+    else:
+        raise NotImplementedError(
+            f"Model type {cfg.model.model_type} not implemented"
+        )
+
     model.to(cfg.model.device)
 
     trainer = ActiveTrainer(
