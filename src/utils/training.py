@@ -189,7 +189,7 @@ class ActiveTrainer:
                 self.cfg.training.acquisition_function = "uniform"
             else:
                 sorted_pairs = sorted(self.uncertainty_map, key=lambda x: -x[1])
-                added_idx = [pair for (pair, _) in sorted_pairs[:self.cfg.training.num_acquired_samples]]
+                added_idx = [pair for (pair, _) in sorted_pairs if pair in self.train_dataset.pool_index][:self.cfg.training.num_acquired_samples]
 
         elif self.cfg.training.acquisition_function == "uniform":
             added_idx = random.sample(
