@@ -14,6 +14,7 @@ training:
   acquisition_function: uniform
   num_acquired_samples: 1024
   num_initial_samples: 2048
+  keep_ratio: 0.2 # Replay buffer for active learning
 
 loss:
   beta_concept: 1.0              # Weight for concept_loss in total loss
