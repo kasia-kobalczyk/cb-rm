@@ -67,6 +67,7 @@ class ActiveTrainer:
         self.max_num_eval_steps = cfg.training.max_num_eval_steps
         self.best_eval_metric = np.inf
         self.keep_ratio = cfg.training.keep_ratio
+        self.keep_ratio = cfg.training.keep_ratio
 
         self.training_metrics = [
             'loss', 'preference_accuracy', 'concept_pseudo_accuracy', 'preference_loss', 'concept_loss'
@@ -96,9 +97,11 @@ class ActiveTrainer:
             added_idx = self.query_new_data()
             self.train_dataset.build_dataset(added_idx)
             sampler = ReplayPrioritySampler(self.train_dataset, added_idx, self.keep_ratio)
+            sampler = ReplayPrioritySampler(self.train_dataset, added_idx, self.keep_ratio)
             self.train_dataloader = DataLoader(
                 self.train_dataset,
                 batch_size=self.cfg.data.batch_size,
+                sampler=sampler,
                 sampler=sampler,
                 collate_fn=collate_fn,
             )
