@@ -23,10 +23,8 @@ class ReplayPrioritySampler(Sampler):
     def __iter__(self):
         # Convert (idx, concept_idx) -> example_idx (row in dataset)
         added_rows = {i for i, _ in self.added_idx}
-
         # Remaining indices
-        all_indices_set = set(self.all_indices)
-        remaining = list(all_indices_set - added_rows)
+        remaining = list(set(self.all_indices) - added_rows)
 
         # Replay sampling
         n_keep = int(len(remaining) * self.keep_ratio)
@@ -67,6 +65,7 @@ class ActiveTrainer:
         self.max_num_eval_steps = cfg.training.max_num_eval_steps
         self.best_eval_metric = np.inf
         self.keep_ratio = cfg.training.keep_ratio
+        self.keep_ratio = cfg.training.keep_ratio
 
         self.training_metrics = [
             'loss', 'preference_accuracy', 'concept_pseudo_accuracy', 'preference_loss', 'concept_loss'
@@ -96,9 +95,11 @@ class ActiveTrainer:
             added_idx = self.query_new_data()
             self.train_dataset.build_dataset(added_idx)
             sampler = ReplayPrioritySampler(self.train_dataset, added_idx, self.keep_ratio)
+            sampler = ReplayPrioritySampler(self.train_dataset, added_idx, self.keep_ratio)
             self.train_dataloader = DataLoader(
                 self.train_dataset,
                 batch_size=self.cfg.data.batch_size,
+                sampler=sampler,
                 sampler=sampler,
                 collate_fn=collate_fn,
             )
