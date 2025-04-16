@@ -55,6 +55,7 @@ class ActiveTrainer:
         self.train_dataset = train_dataset
         self.val_dataloader = val_dataloader
         self.last_save_it = 0
+        self.uncertainty_map = []  
         self.num_epochs = cfg.training.num_epochs
         self.model = model
         self.model.to(self.device)
@@ -110,6 +111,7 @@ class ActiveTrainer:
     def train_episode(self):
         eval_stopping_metric = 'preference_accuracy'
         it = 0
+        self.uncertainty_map = []  
         best_eval_metric = self.best_eval_metric
         for epoch in range(self.num_epochs):
             print(f"Epoch {epoch + 1}/{self.num_epochs}")
@@ -120,6 +122,10 @@ class ActiveTrainer:
                 loss = results["loss"]
                 loss.backward()
                 self.optimizer.step()
+                if self.cfg.model_type == "probabilistic":
+                    relative_var = results["relative_var"].detach().cpu()
+                    idx_batch = batch["id"]
+                    self.uncertainty_map.extend(((idx.item(), k), relative_var[b, k].item())for b, idx in enumerate(idx_batch)for k in range(relative_var.shape[1]))
                 if not self.cfg.training.dry_run:
                     wandb.log(
                         {'train_' + k: results[k] for k in self.training_metrics},
@@ -181,7 +187,15 @@ class ActiveTrainer:
         return results
 
     def query_new_data(self):
-        if self.cfg.training.acquisition_function == "uniform":
+        if self.cfg.training.acquisition_function == "expected_information_gain":
+            if self.cfg.model_type == "deterministic":
+                print("Model is deterministic. Falling back to uniform acquisition.")
+                self.cfg.training.acquisition_function = "uniform"
+            else:
+                sorted_pairs = sorted(self.uncertainty_map, key=lambda x: -x[1])
+                added_idx = [pair for (pair, _) in sorted_pairs[:self.cfg.training.num_acquired_samples]]
+
+        elif self.cfg.training.acquisition_function == "uniform":
             added_idx = random.sample(
                 list(self.train_dataset.pool_index),
                 self.cfg.training.num_acquired_samples

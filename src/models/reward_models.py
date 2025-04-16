@@ -118,6 +118,10 @@ class ProbabilisticBottleneckRewardModel(BottleneckRewardModel):
         concept_logits_a = self.concept_sampler(mean_a, var_a)
         concept_logits_b = self.concept_sampler(mean_b, var_b)
 
+        relative_mean = mean_a - mean_b
+        relative_var = var_a + var_b
+        # TODO: I would update the relative logits like this (and see KLs accordingly)
+        # relative_concept_logits = self.concept_sampler(relative_mean, relative_var)
         relative_concept_logits = concept_logits_a - concept_logits_b
 
         kl_loss = self.concept_sampler.kl_divergence(mean_a, var_a) + \
@@ -141,6 +145,7 @@ class ProbabilisticBottleneckRewardModel(BottleneckRewardModel):
             'concept_loss': concept_loss,
             'concept_pseudo_accuracy': concept_pseudo_acc,
             'kl_loss': kl_loss,
+            'relative_var': relative_var,
         }
 
 class MLP(nn.Module):

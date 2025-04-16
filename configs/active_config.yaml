@@ -11,7 +11,7 @@ training:
   seed: 42
   dry_run: False         # Set to true to skip wandb logging and saving
   num_episodes: 100
-  acquisition_function: uniform
+  acquisition_function: expected_information_gain #'uniform' or 'expected_information_gain'
   num_acquired_samples: 1024
   num_initial_samples: 2048
   keep_ratio: 0.2 # Replay buffer for active learning

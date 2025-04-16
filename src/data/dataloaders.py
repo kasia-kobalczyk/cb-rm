@@ -71,6 +71,7 @@ class PreferenceDataset(Dataset):
             'example_b': self.construct_example(idx_b),
             'preference_label': preference_label,
             'concept_labels': concept_labels,
+            'id': pair_idx, 
         }
 
     def construct_example(self, example_idx):
@@ -190,6 +191,7 @@ def collate_fn(batch):
         'example_b': example_b,
         'preference_labels': torch.stack([torch.tensor(x['preference_label']).reshape(1) for x in batch]),
         'concept_labels': torch.stack([x['concept_labels'] for x in batch]),
+        'id': torch.tensor([x['id'] for x in batch], dtype=torch.long)
     }
 
 def get_dataloader(cfg, split='train'):
