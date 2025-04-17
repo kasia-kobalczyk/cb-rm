@@ -10,8 +10,6 @@ import random
 from hydra.utils import instantiate
 from copy import deepcopy
 
-# Add the src folder to path
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 from src.models.reward_models import *
 from utils.training import Trainer
 

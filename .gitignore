@@ -180,3 +180,5 @@ datasets/
 wandb/
 outputs/
 saves/
+# for symlink
+datasets
