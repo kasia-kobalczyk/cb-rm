@@ -50,7 +50,6 @@ class ActiveTrainer:
         self.device = cfg.model.device
         self.train_dataset = train_dataset
         self.val_dataloader = val_dataloader
-        self.last_save_it = 0
         self.uncertainty_map = []  
         self.num_epochs = cfg.training.num_epochs
         self.model = model
@@ -145,7 +144,7 @@ class ActiveTrainer:
                                 self.optimizer.state_dict(),
                                 f"{self.save_dir}/optim_best.pt",
                             )
-                            print(f"Best model saved at step {self.last_save_it + it}")
+                            print(f"Best model saved at step {it}")
                 it += 1
         
         final_val_results = self.eval(self.eval_metrics, dataloader='val', max_steps=self.max_num_eval_steps)
@@ -166,7 +165,7 @@ class ActiveTrainer:
                     self.optimizer.state_dict(),
                     f"{self.save_dir}/optim_best.pt",
                 )
-                print(f"Best model saved at step {self.last_save_it + it}")
+                print(f"Best model saved at step {it}")
 
         self.best_eval_metric = best_eval_metric
 
@@ -239,7 +238,6 @@ class Trainer:
         self.device = cfg.model.device
         self.train_dataloader = train_dataloader
         self.val_dataloader = val_dataloader
-        self.last_save_it = 0
         self.num_epochs = cfg.training.num_epochs
         self.model = model
         self.model.to(self.device)
@@ -289,7 +287,7 @@ class Trainer:
                 if not self.cfg.training.dry_run:
                     wandb.log(
                         {'train_' + k: results[k] for k in self.training_metrics},
-                        step=self.last_save_it + it,
+                        step= it,
                     )
 
                 if it % self.eval_steps == 0 and it > 0:
@@ -297,7 +295,7 @@ class Trainer:
                     if not self.cfg.training.dry_run:
                         wandb.log(
                             {'val_' + k: val_results[k] for k in self.eval_metrics},
-                            step=self.last_save_it + it,
+                            step= it,
                         )
                         eval_metric_value = val_results[eval_stopping_metric]
                         if 'accuracy' in eval_stopping_metric:
@@ -312,7 +310,7 @@ class Trainer:
                                 self.optimizer.state_dict(),
                                 f"{self.save_dir}/optim_best.pt",
                             )
-                            print(f"Best model saved at step {self.last_save_it + it}")
+                            print(f"Best model saved at step {it}")
                 it += 1
 
         return best_eval_metric
