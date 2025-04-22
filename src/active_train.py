@@ -20,14 +20,11 @@ def setup_trainer(cfg, save_dir=None):
     
     # Set output dimensions dynamically
     num_concepts = len(train_dataset.concept_names)
-    cfg.model_builder.concept_encoder.output_dim = 2 * num_concepts if cfg.model_type == "probabilistic" else num_concepts
-    cfg.model_builder.gating_network.output_dim = num_concepts
-    # Workaround for the concept sampler: Cleaner if yaml split in two
-    model_builder_cfg = deepcopy(cfg.model_builder)
-    if cfg.model_type == "deterministic": OmegaConf.set_struct(model_builder_cfg, False); del model_builder_cfg["concept_sampler"]
+    cfg.model.model_builder.concept_encoder.output_dim = 2 * num_concepts if cfg.model.model_type == "probabilistic" else num_concepts
+    cfg.model.model_builder.gating_network.output_dim = num_concepts
     
     # Create model
-    model = instantiate(model_builder_cfg)
+    model = instantiate(cfg.model.model_builder)
     model.to(cfg.model.device)
     
     # Create Trainer
@@ -41,7 +38,7 @@ def setup_trainer(cfg, save_dir=None):
     
     return trainer
 
-@hydra.main(version_base=None, config_path=f"../configs", config_name="train_config") #active_config, train_config
+@hydra.main(version_base=None, config_path=f"../configs", config_name="train_config")
 def train(cfg: DictConfig):
 
     # Set random seed

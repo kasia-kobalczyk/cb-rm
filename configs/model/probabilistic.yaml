@@ -1,0 +1,8 @@
+defaults:
+  - base
+
+model_type: probabilistic
+resolve_model_target: src.models.reward_models.ProbabilisticBottleneckRewardModel
+
+model_builder:
+  concept_sampler: gaussian

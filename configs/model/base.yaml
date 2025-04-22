@@ -1,0 +1,15 @@
+device: cuda:0
+input_dim: 4096
+
+model_builder:
+  _target_: ${model.resolve_model_target}
+  concept_encoder:
+    _target_: src.models.reward_models.MLP
+    input_dim: ${model.input_dim}
+    output_dim: null  # placeholder
+    hidden_dim: 512
+    num_layers: 1
+  gating_network:
+    _target_: src.models.reward_models.GatingNetwork
+    input_dim: ${model.input_dim}
+    output_dim: null  # placeholder

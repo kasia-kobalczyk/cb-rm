@@ -66,7 +66,7 @@ class ActiveTrainer:
             'loss', 'preference_accuracy', 'concept_pseudo_accuracy', 'preference_loss', 'concept_loss'
         ]
 
-        if self.cfg.model_type == "probabilistic":
+        if self.cfg.model.model_type == "probabilistic":
             self.training_metrics.append('kl_loss')
 
         self.eval_metrics = [
@@ -120,7 +120,7 @@ class ActiveTrainer:
                 loss = results["loss"]
                 loss.backward()
                 self.optimizer.step()
-                if self.cfg.model_type == "probabilistic":
+                if self.cfg.model.model_type == "probabilistic":
                     relative_var = results["relative_var"].detach().cpu()
                     idx_batch = batch["id"]
                     self.uncertainty_map.extend(((idx.item(), k), relative_var[b, k].item())for b, idx in enumerate(idx_batch)for k in range(relative_var.shape[1]))
@@ -186,7 +186,7 @@ class ActiveTrainer:
 
     def query_new_data(self):
         if self.cfg.training.acquisition_function == "expected_information_gain":
-            if self.cfg.model_type == "deterministic":
+            if self.cfg.model.model_type == "deterministic":
                 print("Model is deterministic. Falling back to uniform acquisition.")
                 self.cfg.training.acquisition_function = "uniform"
             else:
@@ -223,120 +223,6 @@ class ActiveTrainer:
                 if it > max_steps:
                     break
                         
-            for k in metrics:
-                eval_results[k] = torch.mean(torch.tensor(eval_results[k])).item()
-
-        return eval_results
-    
-class Trainer:
-    def __init__(
-            self, 
-            cfg, 
-            model,
-            train_dataloader,
-            val_dataloader,
-            save_dir,
-        ):
-        self.cfg = cfg
-        self.device = cfg.model.device
-        self.train_dataloader = train_dataloader
-        self.val_dataloader = val_dataloader
-        self.num_epochs = cfg.training.num_epochs
-        self.model = model
-        self.model.to(self.device)
-        self.optimizer = torch.optim.Adam(
-            self.model.parameters(), lr=cfg.training.lr, eps=3e-5
-        )
-        self.save_dir = save_dir
-        self.eval_steps = cfg.training.eval_steps
-        self.max_num_eval_steps = cfg.training.max_num_eval_steps
-
-        self.training_metrics = [
-            'loss', 'preference_accuracy', 'concept_pseudo_accuracy', 'preference_loss', 'concept_loss'
-        ]
-
-        if self.cfg.model_type == "probabilistic":
-            self.training_metrics.append('kl_loss')
-
-        self.eval_metrics = [
-            'preference_accuracy', 'concept_pseudo_accuracy'
-        ]
-
-    def run_batch(self, batch):
-        batch = batch_to_device(batch, self.device)
-        results = self.model(batch)
-
-        results['loss'] = results['preference_loss'] + self.cfg.loss.beta_concept * results['concept_loss']
-
-        if self.cfg.model_type == "probabilistic":
-            results['loss'] += self.cfg.loss.beta_kl * results['kl_loss']
-
-        return results
-    
-
-    def train(self):
-        eval_stopping_metric = 'preference_accuracy'
-        it = 0
-        best_eval_metric = np.inf
-        for epoch in range(self.num_epochs + 1):
-            print(f"Epoch {epoch}/{self.num_epochs}")
-            for batch in tqdm(self.train_dataloader):
-                self.model.train()
-                self.optimizer.zero_grad()
-                results = self.run_batch(batch)
-                loss = results["loss"]
-                loss.backward()
-                self.optimizer.step()
-                if not self.cfg.training.dry_run:
-                    wandb.log(
-                        {'train_' + k: results[k] for k in self.training_metrics},
-                        step= it,
-                    )
-
-                if it % self.eval_steps == 0 and it > 0:
-                    val_results = self.eval(self.eval_metrics, dataloader='val', max_steps=self.max_num_eval_steps)
-                    if not self.cfg.training.dry_run:
-                        wandb.log(
-                            {'val_' + k: val_results[k] for k in self.eval_metrics},
-                            step= it,
-                        )
-                        eval_metric_value = val_results[eval_stopping_metric]
-                        if 'accuracy' in eval_stopping_metric:
-                            eval_metric_value = -eval_metric_value
-                        if eval_metric_value < best_eval_metric:
-                            best_eval_metric =  eval_metric_value
-
-                            state_dict_save = self.model.state_dict()
-
-                            torch.save(state_dict_save, f"{self.save_dir}/model_best.pt")
-                            torch.save(
-                                self.optimizer.state_dict(),
-                                f"{self.save_dir}/optim_best.pt",
-                            )
-                            print(f"Best model saved at step {it}")
-                it += 1
-
-        return best_eval_metric
-    
-    def eval(self, metrics, dataloader, max_steps):
-        print(f"Evaluating on {dataloader} data")
-        if dataloader == 'val':
-            dataloader = self.val_dataloader
-
-        eval_results = {}
-        for k in metrics:
-            eval_results[k] = []
-        it = 0
-        self.model.eval()
-        with torch.no_grad():
-            for batch in dataloader:
-                results = self.run_batch(batch)
-                for k in metrics:
-                    eval_results[k].append(results[k])
-                it += 1
-                if it > max_steps:
-                    break
-
             for k in metrics:
                 eval_results[k] = torch.mean(torch.tensor(eval_results[k])).item()
 
