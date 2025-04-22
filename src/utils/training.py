@@ -198,12 +198,58 @@ class ActiveTrainer:
                 list(self.train_dataset.pool_index),
                 self.cfg.training.num_acquired_samples
             )
+        elif self.cfg.training.acquisition_function == "coop":
+            added_idx = self.coop_query()
         else:
             raise NotImplementedError(
                 f"Acquisition function {self.cfg.training.acquisition_func} not implemented"
             )
         return added_idx
 
+    def coop_query(self):
+        concept_names = self.train_dataset.concept_names
+        pool_idx = list(self.train_dataset.pool_index)
+        num_acquire = self.cfg.training.num_acquired_samples
+        alpha = 1.0 #self.cfg.training.coop_alpha
+        beta = 1.0 #self.cfg.training.coop_beta
+        gamma = 1.0 #self.cfg.training.coop_gamma
+
+        self.model.eval()
+        coop_scores = []
+
+        with torch.no_grad():
+            for idx in pool_idx:
+                example = self.train_dataset.get_example_by_index(idx)
+                x = example['prompt_response_embedding'].unsqueeze(0).to(self.device)
+                concept_logits = self.model.concept_encoder(x)
+                probs = torch.sigmoid(concept_logits).squeeze(0)
+
+                # 1. Compute CPU
+                cpu = -probs * torch.log(probs + 1e-8) - (1 - probs) * torch.log(1 - probs + 1e-8)
+
+                # 2. Compute influence (CIS)
+                prompt_embedding = example['prompt_embedding'].unsqueeze(0).to(self.device)
+                weights = self.model.gating_network(prompt_embedding).squeeze(0)
+                reward_pred = torch.sum(weights * concept_logits.squeeze(0)).item()
+
+                influence = []
+                for i in range(probs.shape[0]):
+                    # Intervene by flipping concept i
+                    intervened_logits = concept_logits.clone()
+                    intervened_logits[0, i] = -intervened_logits[0, i]  # simple flip
+                    reward_with_intervention = torch.sum(weights * intervened_logits.squeeze(0)).item()
+                    delta = abs(reward_with_intervention - reward_pred)
+                    influence.append(delta)
+                influence = torch.tensor(influence)
+
+                # 3. Combine
+                score = alpha * cpu + beta * influence - gamma * torch.ones_like(cpu)  # unit cost
+                for i, s in enumerate(score):
+                    coop_scores.append(((idx, i), s.item()))
+
+        coop_scores.sort(key=lambda x: -x[1])
+        added_idx = [idx for (idx, _) in coop_scores[:num_acquire]]
+        return added_idx
     def eval(self, metrics, dataloader, max_steps):
         print(f"Evaluating on {dataloader} data")
         if dataloader == 'val':
