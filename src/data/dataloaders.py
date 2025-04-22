@@ -62,6 +62,7 @@ class PreferenceDataset(Dataset):
         
         
         if concept_labels is None or (isinstance(concept_labels, float) and np.isnan(concept_labels)):
+            # Note: safeguarding, should not actually be used 
             concept_labels = torch.ones(len(self.concept_names)) * -1.0
         else:
             concept_labels = torch.tensor(concept_labels)
@@ -143,7 +144,7 @@ class ExpandableConceptPreferenceDataset(PreferenceDataset):
         )
         self.labelled_data = self.pairs_data.copy()
 
-        # Filter nan values in the relative_concept_labels column of the labelled pool
+        # Filter nan values in the relative_concept_labels column of the labelled pool, note: safeguarding, should not actually be used 
         nan_filter = [np.isnan(x) if isinstance(x, float) else x is None for x in self.labelled_data['relative_concept_labels']]
         nan_index = self.labelled_data[nan_filter].index
         self.labelled_data.loc[nan_index, 'relative_concept_labels'] = None
