@@ -61,7 +61,6 @@ class ActiveTrainer:
         self.eval_steps = cfg.training.eval_steps
         self.max_num_eval_steps = cfg.training.max_num_eval_steps
         self.best_eval_metric = np.inf
-        self.keep_ratio = cfg.training.keep_ratio
 
         self.training_metrics = [
             'loss', 'preference_accuracy', 'concept_pseudo_accuracy', 'preference_loss', 'concept_loss'
@@ -82,6 +81,10 @@ class ActiveTrainer:
             collate_fn=collate_fn,
         )
         print(f"Starting training with {len(self.train_dataset)} pairs")
+        if not getattr(self.cfg.training, "active_learning", True):
+            print("Running standard training (no active learning episodes)...")
+            return self.train_episode()
+
         for episode in range(self.cfg.training.num_episodes):
             print(f"Episode {episode}/{self.cfg.training.num_episodes}")
             # Run one episode of training
@@ -90,7 +93,7 @@ class ActiveTrainer:
             # Query new data
             added_idx = self.query_new_data()
             self.train_dataset.build_dataset(added_idx)
-            sampler = ReplayPrioritySampler(self.train_dataset, added_idx, self.keep_ratio)
+            sampler = ReplayPrioritySampler(self.train_dataset, added_idx, self.cfg.training.keep_ratio)
             self.train_dataloader = DataLoader(
                 self.train_dataset,
                 batch_size=self.cfg.data.batch_size,

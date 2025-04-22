@@ -41,7 +41,7 @@ def setup_trainer(cfg, save_dir=None):
     
     return trainer
 
-@hydra.main(version_base=None, config_path=f"../configs", config_name="active_config")
+@hydra.main(version_base=None, config_path=f"../configs", config_name="train_config") #active_config, train_config
 def train(cfg: DictConfig):
 
     # Set random seed
