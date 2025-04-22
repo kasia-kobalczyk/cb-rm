@@ -115,17 +115,15 @@ class ProbabilisticBottleneckRewardModel(BottleneckRewardModel):
         var_a = torch.nn.functional.softplus(var_a)
         var_b = torch.nn.functional.softplus(var_b)
 
-        concept_logits_a = self.concept_sampler(mean_a, var_a)
-        concept_logits_b = self.concept_sampler(mean_b, var_b)
-
         relative_mean = mean_a - mean_b
         relative_var = var_a + var_b
-        # TODO: I would update the relative logits like this (and see KLs accordingly)
-        # relative_concept_logits = self.concept_sampler(relative_mean, relative_var)
-        relative_concept_logits = concept_logits_a - concept_logits_b
 
-        kl_loss = self.concept_sampler.kl_divergence(mean_a, var_a) + \
-                    self.concept_sampler.kl_divergence(mean_b, var_b)
+        relative_concept_logits = self.concept_sampler(relative_mean, relative_var)
+        
+        kl_loss = self.concept_sampler.kl_divergence(relative_mean, relative_var) #+ \ 
+                  # self.concept_sampler.kl_divergence(mean_a, var_a) + \
+                  # self.concept_sampler.kl_divergence(mean_b, var_b)
+                  # Potentially add regularization on a and b as well
         
         weights = self.gating_network(batch['example_a']['prompt_embedding'])
         
