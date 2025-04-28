@@ -24,7 +24,7 @@ def setup_trainer(cfg, save_dir=None):
     cfg.model.model_builder.gating_network.output_dim = num_concepts
     
     # Create model
-    model = instantiate(cfg.model.model_builder)
+    model = instantiate(cfg.model.model_builder, use_temperature=cfg.model.use_temperature)
     model.to(cfg.model.device)
     
     # Create Trainer
@@ -38,7 +38,7 @@ def setup_trainer(cfg, save_dir=None):
     
     return trainer
 
-@hydra.main(version_base=None, config_path=f"../configs", config_name="train_config")
+@hydra.main(version_base=None, config_path=f"../configs", config_name="active_config")
 def train(cfg: DictConfig):
 
     # Set random seed

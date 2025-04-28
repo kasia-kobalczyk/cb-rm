@@ -1,5 +1,6 @@
 device: cuda:0
 input_dim: 4096
+use_temperature: false 
 
 model_builder:
   _target_: ${model.resolve_model_target}

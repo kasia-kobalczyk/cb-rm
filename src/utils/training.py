@@ -61,6 +61,7 @@ class ActiveTrainer:
         self.eval_steps = cfg.training.eval_steps
         self.max_num_eval_steps = cfg.training.max_num_eval_steps
         self.best_eval_metric = np.inf
+        self.current_episode = 0
 
         self.training_metrics = [
             'loss', 'preference_accuracy', 'concept_pseudo_accuracy', 'preference_loss', 'concept_loss'
@@ -89,6 +90,7 @@ class ActiveTrainer:
             print(f"Episode {episode}/{self.cfg.training.num_episodes}")
             # Run one episode of training
             best_eval_metric = self.train_episode()
+            self.current_episode += 1
             print(f"Best eval metric afer episode {episode}: {best_eval_metric:.3f}")
             # Query new data
             added_idx = self.query_new_data()
@@ -109,11 +111,21 @@ class ActiveTrainer:
     def train_episode(self):
         eval_stopping_metric = 'preference_accuracy'
         it = 0
-        self.uncertainty_map = []  
+        # self.uncertainty_map = []  
+        self.uncertainty_map = {
+            "variance": [],
+            "concept_uncertainty": [],
+            "concept_weight": [],
+            "label_uncertainty": [],
+        }
         best_eval_metric = self.best_eval_metric
         for epoch in range(self.num_epochs):
             print(f"Epoch {epoch + 1}/{self.num_epochs}")
             for batch in tqdm(self.train_dataloader):
+            # for i, batch in enumerate(tqdm(self.train_dataloader)):
+            #     if i >= 3:
+            #         break
+                # rest of your code
                 self.model.train()
                 self.optimizer.zero_grad()
                 results = self.run_batch(batch)
@@ -122,8 +134,33 @@ class ActiveTrainer:
                 self.optimizer.step()
                 if self.cfg.model.model_type == "probabilistic":
                     relative_var = results["relative_var"].detach().cpu()
+                    concept_logits = results["relative_concept_logits"].detach().cpu()
+                    reward_diff = results["reward_diff"].detach().cpu()
+                    weights = results["weights"].detach().cpu()
                     idx_batch = batch["id"]
-                    self.uncertainty_map.extend(((idx.item(), k), relative_var[b, k].item())for b, idx in enumerate(idx_batch)for k in range(relative_var.shape[1]))
+                    concept_uncertainty = torch.sigmoid(-concept_logits)
+                    label_uncertainty = torch.sigmoid(-reward_diff)
+
+                    # Now fill the uncertainty_map dictionary
+                    self.uncertainty_map["variance"].extend(
+                        ((idx.item(), k), relative_var[b, k].item())
+                        for b, idx in enumerate(idx_batch)
+                        for k in range(relative_var.shape[1])
+                    )
+                    self.uncertainty_map["concept_uncertainty"].extend(
+                        ((idx.item(), k), concept_uncertainty[b, k].item())
+                        for b, idx in enumerate(idx_batch)
+                        for k in range(concept_uncertainty.shape[1])
+                    )
+                    self.uncertainty_map["concept_weight"].extend(
+                        ((idx.item(), k), weights[b, k].item())
+                        for b, idx in enumerate(idx_batch)
+                        for k in range(weights.shape[1])
+                    )
+                    self.uncertainty_map["label_uncertainty"].extend(
+                        ((idx.item(), -1), label_uncertainty[b].item())
+                        for b, idx in enumerate(idx_batch)
+                    )
                 if not self.cfg.training.dry_run:
                     wandb.log(
                         {'train_' + k: results[k] for k in self.training_metrics},
@@ -155,6 +192,9 @@ class ActiveTrainer:
             wandb.log(
                 {'val_' + k: final_val_results[k] for k in self.eval_metrics},
             )
+            log_dict = {'episode_val_' + k: final_val_results[k] for k in self.eval_metrics}
+            log_dict['episode'] = self.current_episode
+            wandb.log(log_dict)
             eval_metric_value = final_val_results[eval_stopping_metric]
             if 'accuracy' in eval_stopping_metric:
                 eval_metric_value = -eval_metric_value
@@ -181,75 +221,128 @@ class ActiveTrainer:
         
         if 'kl_loss' in results:
             results['loss'] += self.cfg.loss.beta_kl * results['kl_loss']
+
+        if 'temperature' in results and self.cfg.model.use_temperature:
+            temp_loss = torch.mean((results['temperature'] - 1.0) ** 2)  # Regularize to T ~ 1
+            results['loss'] += self.cfg.loss.beta_temperature * temp_loss
+            results['temperature_loss'] = temp_loss 
             
         return results
 
     def query_new_data(self):
-        if self.cfg.training.acquisition_function == "expected_information_gain":
-            if self.cfg.model.model_type == "deterministic":
+        if self.cfg.model.model_type == "deterministic" and self.cfg.training.acquisition_function != "uniform":
                 print("Model is deterministic. Falling back to uniform acquisition.")
                 self.cfg.training.acquisition_function = "uniform"
-            else:
-                sorted_pairs = sorted(self.uncertainty_map, key=lambda x: -x[1])
-                added_idx = [pair for (pair, _) in sorted_pairs if pair in self.train_dataset.pool_index][:self.cfg.training.num_acquired_samples]
 
-        elif self.cfg.training.acquisition_function == "uniform":
+        if self.cfg.training.acquisition_function == "uniform":
             added_idx = random.sample(
                 list(self.train_dataset.pool_index),
                 self.cfg.training.num_acquired_samples
             )
-        elif self.cfg.training.acquisition_function == "coop":
-            added_idx = self.coop_query()
+
+        elif self.cfg.training.acquisition_function == "variance":
+            sorted_pairs = sorted(self.uncertainty_map["variance"], key=lambda x: -x[1])
+            added_idx = [pair for (pair, _) in sorted_pairs if pair in self.train_dataset.pool_index][:self.cfg.training.num_acquired_samples]
+
+        elif self.cfg.training.acquisition_function == "concept_uncertainty":
+            metric_uncertainty = 1/abs(self.uncertainty_map["concept_uncertainty"] - 0.5)
+            sorted_pairs = sorted(metric_uncertainty, key=lambda x: -x[1])
+            added_idx = [pair for (pair, _) in sorted_pairs if pair in self.train_dataset.pool_index][:self.cfg.training.num_acquired_samples]
+
+        elif self.cfg.training.acquisition_function == "concept_weight":
+            sorted_pairs = sorted(self.uncertainty_map["concept_weight"], key=lambda x: abs(x[1]))  # absolute value if you want low magnitude
+            added_idx = [pair for (pair, _) in sorted_pairs if pair in self.train_dataset.pool_index][:self.cfg.training.num_acquired_samples]
+        
+        elif self.cfg.training.acquisition_function == "certainty_concept_weight":
+            contribution = self.uncertainty_map["variance"] * abs(self.uncertainty_map["concept_weight"])
+            sorted_pairs = sorted(contribution, key=lambda x: -x[1]) 
+            added_idx = [pair for (pair, _) in sorted_pairs if pair in self.train_dataset.pool_index][:self.cfg.training.num_acquired_samples]
+        
+        elif self.cfg.training.acquisition_function == "label_uncertainty":
+            label_uncertainty_metric = 1/abs(self.uncertainty_map["label_uncertainty"] - 0.5)
+            sorted_pairs = sorted(label_uncertainty_metric, key=lambda x: -x[1])
+            added_idx = [pair for (pair, _) in sorted_pairs if (pair[0], 0) in self.train_dataset.pool_index][:self.cfg.training.num_acquired_samples]
+
+        elif self.cfg.training.acquisition_function == "variance_label_uncertainty":
+            # Combine concept variance and label uncertainty
+            variance_scores = dict(self.uncertainty_map["variance"])
+            label_uncertainty_scores = dict(self.uncertainty_map["label_uncertainty"])
+
+            combined_scores = []
+            for (idx, concept_idx), var_score in variance_scores.items():
+                # Find the corresponding label uncertainty (idx, -1) for the sample
+                label_score = label_uncertainty_scores.get((idx, -1), 0.0)
+
+                # Combine them (you can tune the balance between them with a lambda)
+                lambda_balance = getattr(self.cfg.training, "variance_label_lambda", 1.0)
+                combined_score = var_score + lambda_balance * label_score
+
+                combined_scores.append(((idx, concept_idx), combined_score))
+
+            combined_scores.sort(key=lambda x: -x[1])
+            added_idx = [idx for (idx, _) in combined_scores[:self.cfg.training.num_acquired_samples]]
+
+        elif self.cfg.training.acquisition_function == "temperature_concept_uncertainty":
+            # Combine temperature uncertainty and concept uncertainty
+            temperature_scores = dict(self.uncertainty_map["temperature"])  # (idx, -1) -> temperature
+            concept_scores = self.uncertainty_map["concept_uncertainty"]    # (idx, concept_idx) -> uncertainty
+
+            combined_scores = []
+            for (idx, concept_idx), concept_unc in concept_scores:
+                temp_unc = temperature_scores.get((idx, -1), 1.0)  # default temp 1.0 if missing
+                combined_unc = temp_unc * concept_unc
+                combined_scores.append(((idx, concept_idx), combined_unc))
+
+            combined_scores.sort(key=lambda x: -x[1])  # descending order
+            added_idx = [idx for (idx, _) in combined_scores[:self.cfg.training.num_acquired_samples]]
+
+        elif self.cfg.training.acquisition_function in ["expected_information_gain", "expected_information_gain_concepts"]:
+            # Shared computation
+            self.model.eval()
+            eig_scores = []
+
+            with torch.no_grad():
+                pool_idx = list(self.train_dataset.pool_index)
+                for idx, concept_idx in pool_idx:
+                    example = self.train_dataset.get_example_by_index(idx)
+                    x = example['prompt_response_embedding'].unsqueeze(0).to(self.device)
+                    prompt_embedding = example['prompt_embedding'].unsqueeze(0).to(self.device)
+
+                    concept_logits = self.model.concept_encoder(x)
+                    weights = self.model.gating_network(prompt_embedding)
+
+                    reward_pred = torch.sum(weights * concept_logits).item()
+
+                    # Flip the specific concept
+                    intervened_logits = concept_logits.clone()
+                    intervened_logits[0, concept_idx] = -intervened_logits[0, concept_idx]  # flip
+
+                    reward_with_intervention = torch.sum(weights * intervened_logits).item()
+
+                    delta = abs(reward_with_intervention - reward_pred)
+
+                    # Now, depending on the mode, maybe add extra score
+                    if self.cfg.training.acquisition_function == "expected_information_gain_concepts":
+                        concept_prob = torch.sigmoid(concept_logits)[0, concept_idx]
+                        concept_uncertainty = min(concept_prob, 1.0 - concept_prob).item()
+                        lambda_weight = getattr(self.cfg.training, "eig_uncertainty_lambda", 1.0)
+                        final_score = delta + lambda_weight * concept_uncertainty
+                    else:
+                        final_score = delta
+
+                    eig_scores.append(((idx, concept_idx), final_score))
+
+                eig_scores.sort(key=lambda x: -x[1])
+                added_idx = [idx for (idx, _) in eig_scores[:self.cfg.training.num_acquired_samples]]
+
+
         else:
             raise NotImplementedError(
                 f"Acquisition function {self.cfg.training.acquisition_func} not implemented"
             )
         return added_idx
 
-    def coop_query(self):
-        concept_names = self.train_dataset.concept_names
-        pool_idx = list(self.train_dataset.pool_index)
-        num_acquire = self.cfg.training.num_acquired_samples
-        alpha = 1.0 #self.cfg.training.coop_alpha
-        beta = 1.0 #self.cfg.training.coop_beta
-        gamma = 1.0 #self.cfg.training.coop_gamma
-
-        self.model.eval()
-        coop_scores = []
-
-        with torch.no_grad():
-            for idx in pool_idx:
-                example = self.train_dataset.get_example_by_index(idx)
-                x = example['prompt_response_embedding'].unsqueeze(0).to(self.device)
-                concept_logits = self.model.concept_encoder(x)
-                probs = torch.sigmoid(concept_logits).squeeze(0)
-
-                # 1. Compute CPU
-                cpu = -probs * torch.log(probs + 1e-8) - (1 - probs) * torch.log(1 - probs + 1e-8)
-
-                # 2. Compute influence (CIS)
-                prompt_embedding = example['prompt_embedding'].unsqueeze(0).to(self.device)
-                weights = self.model.gating_network(prompt_embedding).squeeze(0)
-                reward_pred = torch.sum(weights * concept_logits.squeeze(0)).item()
-
-                influence = []
-                for i in range(probs.shape[0]):
-                    # Intervene by flipping concept i
-                    intervened_logits = concept_logits.clone()
-                    intervened_logits[0, i] = -intervened_logits[0, i]  # simple flip
-                    reward_with_intervention = torch.sum(weights * intervened_logits.squeeze(0)).item()
-                    delta = abs(reward_with_intervention - reward_pred)
-                    influence.append(delta)
-                influence = torch.tensor(influence)
-
-                # 3. Combine
-                score = alpha * cpu + beta * influence - gamma * torch.ones_like(cpu)  # unit cost
-                for i, s in enumerate(score):
-                    coop_scores.append(((idx, i), s.item()))
-
-        coop_scores.sort(key=lambda x: -x[1])
-        added_idx = [idx for (idx, _) in coop_scores[:num_acquire]]
-        return added_idx
+    
     def eval(self, metrics, dataloader, max_steps):
         print(f"Evaluating on {dataloader} data")
         if dataloader == 'val':

@@ -3,6 +3,17 @@ import torch
 import numpy as np
 from torch.distributions.relaxed_bernoulli import RelaxedBernoulli
 
+class TemperatureNetwork(nn.Module):
+    def __init__(self, input_dim, hidden_dim=128):
+        super().__init__()
+        self.mlp = nn.Linear(input_dim, 1)
+
+    def forward(self, x):
+        temp = self.mlp(x)  # Shape (batch_size, 1)
+        temp = torch.nn.functional.softplus(temp) + 1e-3
+        return temp.squeeze(-1)  # (batch_size,)
+
+
 class BottleneckRewardModel(nn.Module):
     def __init__(
             self, 
@@ -97,13 +108,23 @@ class ProbabilisticBottleneckRewardModel(BottleneckRewardModel):
             concept_encoder,
             gating_network,
             concept_sampler,
+            use_temperature=False,
         ):
         super(ProbabilisticBottleneckRewardModel, self).__init__(concept_encoder, gating_network)
 
         self.concept_sampler_name = concept_sampler
+        self.use_temperature = use_temperature
 
         if concept_sampler == "gaussian":
             self.concept_sampler = GaussianSampler()
+        
+        if self.use_temperature:
+            self.temperature_network = TemperatureNetwork(
+                input_dim=self.cfg.model.concept_encoder.input_dim,
+                hidden_dim=self.cfg.model.concept_encoder.hidden_dim
+            )
+        else:
+            self.temperature_network = None
 
     def forward(self, batch):
         out_a = self.concept_encoder(batch['example_a']['prompt_response_embedding'])
@@ -129,6 +150,13 @@ class ProbabilisticBottleneckRewardModel(BottleneckRewardModel):
         
         reward_diff = torch.sum(weights * relative_concept_logits, dim=1)
 
+        if self.use_temperature:
+            temperature = self.temperature_network(batch['example_a']['prompt_embedding'])
+            reward_diff = reward_diff / temperature
+        else:
+            temperature = torch.ones_like(reward_diff)
+            
+
         preference_loss, preference_acc = self.get_preference_loss(
             reward_diff, batch['preference_labels']
         )
@@ -144,6 +172,11 @@ class ProbabilisticBottleneckRewardModel(BottleneckRewardModel):
             'concept_pseudo_accuracy': concept_pseudo_acc,
             'kl_loss': kl_loss,
             'relative_var': relative_var,
+            'relative_concept_logits': relative_concept_logits,
+            'reward_diff': reward_diff,
+            'weights': weights,
+            'relative_concept_logits': relative_concept_logits,
+            'temperature': temperature
         }
 
 class MLP(nn.Module):
