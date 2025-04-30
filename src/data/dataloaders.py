@@ -43,7 +43,6 @@ class PreferenceDataset(Dataset):
             right_on=['idx_a', 'idx_b'],
             how='left',
         )
-        
         assert len(self.pairs_data) == len(splits_df)
         
         # Filter to pairs that are in the embeddings
@@ -52,13 +51,19 @@ class PreferenceDataset(Dataset):
             (self.pairs_data['idx_b'].isin(self.embeddings_df.index))
         ]
         
+        # Reset pairs index 
+        self.pairs_data.reset_index(drop=True, inplace=True)
+        self.pairs_data['pair_idx'] = self.pairs_data.index
+        
         self.concept_names = concept_labels_df.iloc[0]['concept_names']
 
-    def __getitem__(self, pair_idx):
-        idx_a = self.pairs_data.iloc[pair_idx]['idx_a']
-        idx_b = self.pairs_data.iloc[pair_idx]['idx_b']
-        preference_label = self.pairs_data.iloc[pair_idx]['preference_label']
-        concept_labels = self.pairs_data.iloc[pair_idx]['relative_concept_labels']
+    def __getitem__(self, idx):
+        idx_a = self.pairs_data.iloc[idx]['idx_a']
+        idx_b = self.pairs_data.iloc[idx]['idx_b']
+        pair_idx = self.pairs_data.iloc[idx]['pair_idx']
+        assert pair_idx == idx
+        preference_label = self.pairs_data.iloc[idx]['preference_label']
+        concept_labels = self.pairs_data.iloc[idx]['relative_concept_labels']
         
         
         if concept_labels is None or (isinstance(concept_labels, float) and np.isnan(concept_labels)):
@@ -72,7 +77,7 @@ class PreferenceDataset(Dataset):
             'example_b': self.construct_example(idx_b),
             'preference_label': preference_label,
             'concept_labels': concept_labels,
-            'id': pair_idx, 
+            'pair_idx': pair_idx,
         }
 
     def construct_example(self, example_idx):
@@ -160,6 +165,7 @@ class ExpandableConceptPreferenceDataset(PreferenceDataset):
         
         # Add initial samples
         initial_samples = list(random.sample(list(self.pool_index), num_initial_samples))
+        self.initial_samples = initial_samples
         self.build_dataset(initial_samples)
 
         
@@ -192,7 +198,7 @@ def collate_fn(batch):
         'example_b': example_b,
         'preference_labels': torch.stack([torch.tensor(x['preference_label']).reshape(1) for x in batch]),
         'concept_labels': torch.stack([x['concept_labels'] for x in batch]),
-        'id': torch.tensor([x['id'] for x in batch], dtype=torch.long)
+        'pair_idx': torch.tensor([x['pair_idx'] for x in batch], dtype=torch.long)
     }
 
 def get_dataloader(cfg, split='train'):
@@ -234,9 +240,10 @@ if __name__ == '__main__':
     cfg = Namespace(
         embeddings_path='./datasets/ultrafeedback/embeddings/meta-llama/Meta-Llama-3-8B/',
         splits_path='./datasets/ultrafeedback/splits.csv',
-        concept_labels_path='./datasets/ultrafeedback/concept_labels/meta-llama/Meta-Llama-3-70B-Instruct',
+        concept_labels_path='./datasets/ultrafeedback/concept_labels/openbmb', #'./datasets/ultrafeedback/concept_labels/meta-llama/Meta-Llama-3-70B-Instruct',
         preference_labels_path='./datasets/ultrafeedback/preference_labels/openbmb_average',
         batch_size=4,
+        num_intial_samples=2048,
     )
     
     # dataloader = get_dataloader(cfg, split='train')
@@ -256,14 +263,26 @@ if __name__ == '__main__':
         concept_labels_path=cfg.concept_labels_path,
         preference_labels_path=cfg.preference_labels_path,
         split='train',
-        num_initial_samples=0
+        num_initial_samples=2048
     )    
-    print(len(dataset.pool_index))
+
+    print(len(dataset))
+    print(dataset.pairs_data.index)
+
+    dataloader = torch.utils.data.DataLoader(
+        dataset,
+        batch_size=64,
+        shuffle=True,
+        collate_fn=collate_fn,
+    )
+
+    pool_index = dataset.pool_index
+    pool_index = [instance_idx for (instance_idx, concept_idx) in pool_index]
+    pool_dataset = torch.utils.data.Subset(dataset, pool_index)
+
+    # print(len(dataset.pool_index))
     
-    added_idx = list(random.sample(list(dataset.pool_index), 10))
-    dataset.build_dataset(added_idx)
-    print(len(dataset.pool_index))
-    
-    added_idx = list(random.sample(list(dataset.pool_index), 10))
-    dataset.build_dataset(added_idx)    
-    print(len(dataset.pool_index))
+    # while dataset.pool_index:
+    #     added_idx = list(random.sample(list(dataset.pool_index), 2048))
+    #     dataset.build_dataset(added_idx)
+    #     print(len(dataset.pool_index))

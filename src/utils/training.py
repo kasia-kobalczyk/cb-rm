@@ -21,6 +21,7 @@ class ReplayPrioritySampler(Sampler):
     def __iter__(self):
         # Convert (idx, concept_idx) -> example_idx (row in dataset)
         added_rows = {i for i, _ in self.added_idx}
+        
         # Remaining indices
         remaining = list(set(self.all_indices) - added_rows)
 
@@ -111,56 +112,18 @@ class ActiveTrainer:
     def train_episode(self):
         eval_stopping_metric = 'preference_accuracy'
         it = 0
-        # self.uncertainty_map = []  
-        self.uncertainty_map = {
-            "variance": [],
-            "concept_uncertainty": [],
-            "concept_weight": [],
-            "label_uncertainty": [],
-        }
+        
         best_eval_metric = self.best_eval_metric
         for epoch in range(self.num_epochs):
             print(f"Epoch {epoch + 1}/{self.num_epochs}")
             for batch in tqdm(self.train_dataloader):
-            # for i, batch in enumerate(tqdm(self.train_dataloader)):
-            #     if i >= 3:
-            #         break
-                # rest of your code
                 self.model.train()
                 self.optimizer.zero_grad()
                 results = self.run_batch(batch)
                 loss = results["loss"]
                 loss.backward()
                 self.optimizer.step()
-                if self.cfg.model.model_type == "probabilistic":
-                    relative_var = results["relative_var"].detach().cpu()
-                    concept_logits = results["relative_concept_logits"].detach().cpu()
-                    reward_diff = results["reward_diff"].detach().cpu()
-                    weights = results["weights"].detach().cpu()
-                    idx_batch = batch["id"]
-                    concept_uncertainty = torch.sigmoid(-concept_logits)
-                    label_uncertainty = torch.sigmoid(-reward_diff)
-
-                    # Now fill the uncertainty_map dictionary
-                    self.uncertainty_map["variance"].extend(
-                        ((idx.item(), k), relative_var[b, k].item())
-                        for b, idx in enumerate(idx_batch)
-                        for k in range(relative_var.shape[1])
-                    )
-                    self.uncertainty_map["concept_uncertainty"].extend(
-                        ((idx.item(), k), concept_uncertainty[b, k].item())
-                        for b, idx in enumerate(idx_batch)
-                        for k in range(concept_uncertainty.shape[1])
-                    )
-                    self.uncertainty_map["concept_weight"].extend(
-                        ((idx.item(), k), weights[b, k].item())
-                        for b, idx in enumerate(idx_batch)
-                        for k in range(weights.shape[1])
-                    )
-                    self.uncertainty_map["label_uncertainty"].extend(
-                        ((idx.item(), -1), label_uncertainty[b].item())
-                        for b, idx in enumerate(idx_batch)
-                    )
+                
                 if not self.cfg.training.dry_run:
                     wandb.log(
                         {'train_' + k: results[k] for k in self.training_metrics},
@@ -186,7 +149,8 @@ class ActiveTrainer:
                             )
                             print(f"Best model saved at step {it}")
                 it += 1
-        
+
+        # Compute eval results after the episode is finished
         final_val_results = self.eval(self.eval_metrics, dataloader='val', max_steps=self.max_num_eval_steps)
         if not self.cfg.training.dry_run:
             wandb.log(
@@ -212,7 +176,64 @@ class ActiveTrainer:
 
         self.best_eval_metric = best_eval_metric
 
+        # Save the uncertainty map
+        if self.cfg.model.model_type == "probabilistic" and self.cfg.training.acquisition_function != "uniform":
+            self.compute_uncertainty_map()
+
+
         return best_eval_metric
+
+    def compute_uncertainty_map(self):
+        self.uncertainty_map = {
+            "variance": [],
+            "concept_uncertainty": [],
+            "concept_weight": [],
+            "label_uncertainty": [],
+        }
+        self.model.eval()
+        with torch.no_grad():
+            pool_index = self.train_dataset.pool_index
+            pool_instance_index = list({instance_idx for (instance_idx, _) in pool_index})
+            pool_dataset = torch.utils.data.Subset(self.train_dataset, pool_instance_index)
+            pool_dataloader = DataLoader(
+                pool_dataset,
+                batch_size=self.cfg.data.batch_size,
+                shuffle=False,
+                collate_fn=collate_fn,
+            )
+            print(f"Computing uncertainty for the pool dataset of size {len(pool_dataset)} ...")
+            for batch in tqdm(pool_dataloader):
+                results = self.run_batch(batch)
+                relative_var = results["relative_var"].detach().cpu()
+                concept_logits = results["relative_concept_logits"].detach().cpu()
+                reward_diff = results["reward_diff"].detach().cpu()
+                weights = results["weights"].detach().cpu()
+                idx_batch = batch["pair_idx"]
+                concept_uncertainty = torch.sigmoid(-concept_logits)
+                label_uncertainty = torch.sigmoid(-reward_diff)
+
+                # Now fill the uncertainty_map dictionary
+                self.uncertainty_map["variance"].extend(
+                    ((idx.item(), k), relative_var[b, k].item())
+                    for b, idx in enumerate(idx_batch)
+                    for k in range(relative_var.shape[1])
+                )
+                self.uncertainty_map["concept_uncertainty"].extend(
+                    ((idx.item(), k), concept_uncertainty[b, k].item())
+                    for b, idx in enumerate(idx_batch)
+                    for k in range(concept_uncertainty.shape[1])
+                )
+                self.uncertainty_map["concept_weight"].extend(
+                    ((idx.item(), k), weights[b, k].item())
+                    for b, idx in enumerate(idx_batch)
+                    for k in range(weights.shape[1])
+                )
+                self.uncertainty_map["label_uncertainty"].extend(
+                    ((idx.item(), -1), label_uncertainty[b].item())
+                    for b, idx in enumerate(idx_batch)
+                )
+        self.model.train()
+
 
     def run_batch(self, batch):
         batch = batch_to_device(batch, self.device)
@@ -338,7 +359,7 @@ class ActiveTrainer:
 
         else:
             raise NotImplementedError(
-                f"Acquisition function {self.cfg.training.acquisition_func} not implemented"
+                f"Acquisition function {self.cfg.training.acquisition_funtion} not implemented"
             )
         return added_idx
 

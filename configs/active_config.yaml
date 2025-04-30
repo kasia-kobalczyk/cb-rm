@@ -10,7 +10,7 @@ training:
   seed: 42
   dry_run: False         # Set to true to skip wandb logging and saving
   num_episodes: 100
-  acquisition_function: variance #'uniform' or 'expected_information_gain'
+  acquisition_function: uniform #'uniform' or 'expected_information_gain'
   num_acquired_samples: 1024
   num_initial_samples: 2048
   keep_ratio: 0.2 # Replay buffer for active learning
@@ -22,7 +22,7 @@ loss:
 save:
   project_name: active_pref_learning
   wandb_entity: interp_rewards_RLHF
-  run_name_prefix: active_learning_crm
+  run_name_prefix: active_learning_uniform
 
 data:
   embeddings_path: './datasets/ultrafeedback/embeddings/meta-llama/Meta-Llama-3-8B/'
