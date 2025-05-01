@@ -6,13 +6,16 @@ from torch.distributions.relaxed_bernoulli import RelaxedBernoulli
 class TemperatureNetwork(nn.Module):
     def __init__(self, input_dim, hidden_dim=128):
         super().__init__()
-        self.mlp = nn.Linear(input_dim, 1)
-
+        self.net = nn.Sequential(
+            nn.Linear(input_dim, hidden_dim),
+            nn.ReLU(),
+            nn.Linear(hidden_dim, 1)
+        )
+        
     def forward(self, x):
-        temp = self.mlp(x)  # Shape (batch_size, 1)
-        temp = torch.nn.functional.softplus(temp) + 1e-3
-        return temp.squeeze(-1)  # (batch_size,)
-
+        temp = self.net(x) 
+        temp = torch.nn.functional.softplus(temp) + 1e-3  # ensure positivity
+        return temp.squeeze(-1) 
 
 class BottleneckRewardModel(nn.Module):
     def __init__(
@@ -120,8 +123,8 @@ class ProbabilisticBottleneckRewardModel(BottleneckRewardModel):
         
         if self.use_temperature:
             self.temperature_network = TemperatureNetwork(
-                input_dim=self.cfg.model.concept_encoder.input_dim,
-                hidden_dim=self.cfg.model.concept_encoder.hidden_dim
+                input_dim=concept_encoder.model[0].in_features,
+                hidden_dim=concept_encoder.model[-1].in_features
             )
         else:
             self.temperature_network = None
