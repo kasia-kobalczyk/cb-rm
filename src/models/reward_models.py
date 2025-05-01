@@ -174,11 +174,11 @@ class ProbabilisticBottleneckRewardModel(BottleneckRewardModel):
             'concept_loss': concept_loss,
             'concept_pseudo_accuracy': concept_pseudo_acc,
             'kl_loss': kl_loss,
-            'relative_var': relative_var,
-            'relative_concept_logits': relative_concept_logits,
-            'reward_diff': reward_diff,
-            'weights': weights,
-            'relative_concept_logits': relative_concept_logits,
+            # 'relative_var': relative_var,
+            # 'relative_concept_logits': relative_concept_logits,
+            # 'reward_diff': reward_diff,
+            # 'weights': weights,
+            # 'relative_concept_logits': relative_concept_logits,
             'temperature': temperature
         }
 

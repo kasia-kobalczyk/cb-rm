@@ -73,7 +73,7 @@ class ActiveTrainer:
         self.device = cfg.model.device
         self.train_dataset = train_dataset
         self.val_dataloader = val_dataloader
-        self.var_log = []  
+        # self.var_log = []  
         self.num_epochs = cfg.training.num_epochs
         self.model = model
         self.model.to(self.device)
@@ -134,62 +134,62 @@ class ActiveTrainer:
     def train_episode(self):
         eval_stopping_metric = 'preference_accuracy'
         it = 0
-        self.var_log = {
-            "variance": [],
-            "concept_uncertainty": [],
-            "concept_weight": [],
-            "label_uncertainty": [],
-            "temperature": []
-        }
+        # self.var_log = {
+        #     "variance": [],
+        #     "concept_uncertainty": [],
+        #     "concept_weight": [],
+        #     "label_uncertainty": [],
+        #     "temperature": []
+        # }
         best_eval_metric = self.best_eval_metric
         for epoch in range(self.num_epochs):
             print(f"Epoch {epoch + 1}/{self.num_epochs}")
             for batch in tqdm(self.train_dataloader):
             # for i, batch in enumerate(tqdm(self.train_dataloader)):
-                # if i >= 3:
-                #     break
+            #     if i >= 2:
+            #         break
                 self.model.train()
                 self.optimizer.zero_grad()
                 results = self.run_batch(batch)
                 loss = results["loss"]
                 loss.backward()
                 self.optimizer.step()
-                if self.cfg.model.model_type == "probabilistic":
-                    relative_var = results["relative_var"].detach().cpu()
-                    concept_logits = results["relative_concept_logits"].detach().cpu()
-                    reward_diff = results["reward_diff"].detach().cpu()
-                    weights = results["weights"].detach().cpu()
-                    temperature = results["temperature"].detach().cpu()
-                    idx_batch = batch["id"]
-                    concept_uncertainty = torch.sigmoid(-concept_logits)
-                    label_uncertainty = torch.sigmoid(-reward_diff)
+                # if self.cfg.model.model_type == "probabilistic":
+                #     relative_var = results["relative_var"].detach().cpu()
+                #     concept_logits = results["relative_concept_logits"].detach().cpu()
+                #     reward_diff = results["reward_diff"].detach().cpu()
+                #     weights = results["weights"].detach().cpu()
+                #     temperature = results["temperature"].detach().cpu()
+                #     idx_batch = batch["id"]
+                #     concept_uncertainty = torch.sigmoid(-concept_logits)
+                #     label_uncertainty = torch.sigmoid(-reward_diff)
 
-                    # Now fill the var_log dictionary
-                    self.var_log["variance"].extend(
-                        ((idx.item(), k), relative_var[b, k].item())
-                        for b, idx in enumerate(idx_batch)
-                        for k in range(relative_var.shape[1])
-                    )
-                    self.var_log["concept_uncertainty"].extend(
-                        ((idx.item(), k), concept_uncertainty[b, k].item())
-                        for b, idx in enumerate(idx_batch)
-                        for k in range(concept_uncertainty.shape[1])
-                    )
-                    self.var_log["concept_weight"].extend(
-                        ((idx.item(), k), weights[b, k].item())
-                        for b, idx in enumerate(idx_batch)
-                        for k in range(weights.shape[1])
-                    )
-                    self.var_log["label_uncertainty"].extend(
-                        ((idx.item(), k), label_uncertainty[b].item())
-                        for b, idx in enumerate(idx_batch)
-                        for k in range(relative_var.shape[1])
-                    )
-                    self.var_log["temperature"].extend(
-                        ((idx.item(), k), temperature[b].item())
-                        for b, idx in enumerate(idx_batch)
-                        for k in range(relative_var.shape[1])
-                    )
+                #     # Now fill the var_log dictionary
+                #     self.var_log["variance"].extend(
+                #         ((idx.item(), k), relative_var[b, k].item())
+                #         for b, idx in enumerate(idx_batch)
+                #         for k in range(relative_var.shape[1])
+                #     )
+                #     self.var_log["concept_uncertainty"].extend(
+                #         ((idx.item(), k), concept_uncertainty[b, k].item())
+                #         for b, idx in enumerate(idx_batch)
+                #         for k in range(concept_uncertainty.shape[1])
+                #     )
+                #     self.var_log["concept_weight"].extend(
+                #         ((idx.item(), k), weights[b, k].item())
+                #         for b, idx in enumerate(idx_batch)
+                #         for k in range(weights.shape[1])
+                #     )
+                #     self.var_log["label_uncertainty"].extend(
+                #         ((idx.item(), k), label_uncertainty[b].item())
+                #         for b, idx in enumerate(idx_batch)
+                #         for k in range(relative_var.shape[1])
+                #     )
+                #     self.var_log["temperature"].extend(
+                #         ((idx.item(), k), temperature[b].item())
+                #         for b, idx in enumerate(idx_batch)
+                #         for k in range(relative_var.shape[1])
+                #     )
                 if not self.cfg.training.dry_run:
                     wandb.log(
                         {'train_' + k: results[k] for k in self.training_metrics},
@@ -268,79 +268,18 @@ class ActiveTrainer:
             list(self.train_dataset.pool_index),
             self.cfg.training.num_acquired_samples
             )
-        elif self.cfg.training.acquisition_function == "concept_variance":
-            sorted_pairs = sorted(self.var_log["variance"], key=lambda x: -x[1])
-            added_idx = [pair for (pair, _) in sorted_pairs if pair in self.train_dataset.pool_index][:self.cfg.training.num_acquired_samples]
-
-        elif self.cfg.training.acquisition_function == "concept_uncertainty":
-            metric_uncertainty = [(x[0], 1 / abs(x[-1] - 0.5)) for x in self.var_log["concept_uncertainty"]]
-            sorted_pairs = sorted(metric_uncertainty, key=lambda x: -x[1])
-            added_idx = [pair for (pair, _) in sorted_pairs if pair in self.train_dataset.pool_index][:self.cfg.training.num_acquired_samples]
-
-        elif self.cfg.training.acquisition_function == "concept_weight":
-            sorted_pairs = sorted(self.var_log["concept_weight"], key=lambda x: abs(x[1]))  # absolute value if you want low magnitude
-            added_idx = [pair for (pair, _) in sorted_pairs if pair in self.train_dataset.pool_index][:self.cfg.training.num_acquired_samples]
-  
-        elif self.cfg.training.acquisition_function == "certainty_concept_weight":
-            contribution = [(self.var_log["variance"][i][0], self.var_log["variance"][i][-1] * abs(self.var_log["concept_weight"][i][-1])) for i in range(len(self.var_log["concept_uncertainty"]))]
-            sorted_pairs = sorted(contribution, key=lambda x: -x[1]) 
-            added_idx = [pair for (pair, _) in sorted_pairs if pair in self.train_dataset.pool_index][:self.cfg.training.num_acquired_samples]
-        
-        elif self.cfg.training.acquisition_function == "prob_concept_weight":
-            contribution = [(self.var_log["concept_uncertainty"][i][0], self.var_log["concept_uncertainty"][i][-1] * abs(self.var_log["concept_weight"][i][-1])) for i in range(len(self.var_log["concept_uncertainty"]))]
-            sorted_pairs = sorted(contribution, key=lambda x: -x[1])
-            added_idx = [pair for (pair, _) in sorted_pairs if pair in self.train_dataset.pool_index][:self.cfg.training.num_acquired_samples]
-
-        elif self.cfg.training.acquisition_function == "label_uncertainty":
-            label_uncertainty_metric = [(x[0], 1 / abs(x[-1] - 0.5)) for x in self.var_log["label_uncertainty"]]
-            sorted_pairs = sorted(label_uncertainty_metric, key=lambda x: -x[1])
-            added_idx = [pair for (pair, _) in sorted_pairs if (pair[0], 0) in self.train_dataset.pool_index][:self.cfg.training.num_acquired_samples]
-        elif self.cfg.training.acquisition_function == "label_entropy":
-            label_uncertainty_metric = [(x[0], bernoulli_stats(x[-1])) for x in self.var_log["label_uncertainty"]]
-            sorted_pairs = sorted(label_uncertainty_metric, key=lambda x: -x[1])
-            added_idx = [pair for (pair, _) in sorted_pairs if (pair[0], 0) in self.train_dataset.pool_index][:self.cfg.training.num_acquired_samples]
-
-        elif self.cfg.training.acquisition_function == "temperature":
-            sorted_pairs = sorted(self.var_log["temperature"], key=lambda x: -x[1])
-            added_idx = [pair for (pair, _) in sorted_pairs if (pair[0], 0) in self.train_dataset.pool_index][:self.cfg.training.num_acquired_samples]
-
-        elif self.cfg.training.acquisition_function == "variance_label_uncertainty":
-            # Combine concept variance and label uncertainty
-            # label_uncertainty_scores = {(x[0], x[1]): 1 / abs(x[-1] - 0.5) for x in self.var_log["label_uncertainty"]}
-            label_uncertainty_scores = [(x[0], bernoulli_stats(x[-1])) for x in self.var_log["label_uncertainty"]]
-
-            combined_scores = []
-            for (idx, concept_idx), var_score in self.var_log["variance"]:
-
-                label_score = next(v for (i, c), v in label_uncertainty_scores if i == idx and c == concept_idx)
-                # Combine them (we can tune the balance between them with a lambda)
-                lambda_balance = getattr(self.cfg.training, "variance_label_lambda", 1.0)
-                combined_score = var_score + lambda_balance * label_score
-                combined_scores.append(((idx, concept_idx), combined_score))
-
-            combined_scores.sort(key=lambda x: -x[1])
-            added_idx = [idx for (idx, _) in combined_scores[:self.cfg.training.num_acquired_samples]]
-
-        elif self.cfg.training.acquisition_function == "temperature_concept_uncertainty":
-            # Combine temperature uncertainty and concept uncertainty
-            combined_scores = []
-            for (idx, concept_idx), var_score in self.var_log["variance"]:
-
-                label_score = next(v for (i, c), v in self.var_log["temperature"] if i == idx and c == concept_idx)
-
-                # Combine them (we can tune the balance between them with a lambda)
-                lambda_balance = getattr(self.cfg.training, "variance_label_lambda", 1.0)
-                combined_score = var_score + lambda_balance * label_score
-                combined_scores.append(((idx, concept_idx), combined_score))
-
-            combined_scores.sort(key=lambda x: -x[1])
-            added_idx = [idx for (idx, _) in combined_scores[:self.cfg.training.num_acquired_samples]]                
-        
-        elif self.cfg.training.acquisition_function in [ "expected_information_gain",  "expected_information_gain_concepts", "expected_target_uncertainty_reduction",  "intervention_change"]:
-
+                
+        # elif self.cfg.training.acquisition_function in [ "expected_information_gain",  "expected_information_gain_concepts", "expected_target_uncertainty_reduction", "expected_target_uncertainty_reduction_concepts", "intervention_change","CIS_concepts","CIS"]:
+        else:
             self.model.eval()
             scores = []
-
+            var_log = {
+            "variance": [],
+            "concept_uncertainty": [],
+            "concept_weight": [],
+            "label_uncertainty": [],
+            "temperature": []
+            }
             with torch.no_grad():
                 pool_idx = list(self.train_dataset.pool_index)
                 for idx, concept_idx in pool_idx:
@@ -380,14 +319,16 @@ class ActiveTrainer:
                     reward_1, _ = intervene_logits(relative_concept_logits, concept_idx, weights, -10.0)
                     q1 = torch.sigmoid(-reward_1)
 
-                    # ==== Different scoring ====
                     if self.cfg.training.acquisition_function.startswith("expected_information_gain"):
                         kl_0 = bernoulli_stats(p, q0)
                         kl_1 = bernoulli_stats(p, q1)
                         score = (concept_prob * kl_1 + (1 - concept_prob) * kl_0).item()
+                        scores.append(((idx, concept_idx), score))
+
                         if self.cfg.training.acquisition_function == "expected_information_gain_concepts":                            
                             lambda_weight = getattr(self.cfg.training, "eig_uncertainty_lambda", 0.1)
                             score += lambda_weight * relative_var.squeeze()[concept_idx]
+                            scores.append(((idx, concept_idx), score))
 
                     elif self.cfg.training.acquisition_function.startswith("expected_target_uncertainty_reduction"):
                         entropy_before = bernoulli_stats(p)
@@ -396,26 +337,107 @@ class ActiveTrainer:
 
                         expected_entropy_after = concept_prob * entropy_1 + (1 - concept_prob) * entropy_0
                         score = (entropy_before - expected_entropy_after).item()
+                        scores.append(((idx, concept_idx), score))
+
                         if self.cfg.training.acquisition_function == "expected_target_uncertainty_reduction_concepts":                            
                             lambda_weight = getattr(self.cfg.training, "etr_uncertainty_lambda", 0.1)
                             score += lambda_weight * relative_var.squeeze()[concept_idx]
+                            scores.append(((idx, concept_idx), score))
 
 
                     elif self.cfg.training.acquisition_function.startswith("CIS"):
                         expected_p = (1 - concept_prob) * q0 + concept_prob * q1
                         score = abs((expected_p - p).item())
+                        scores.append(((idx, concept_idx), score))
+
                         if self.cfg.training.acquisition_function == "CIS_concepts":
                             lambda_weight = getattr(self.cfg.training, "CIS_uncertainty_lambda", 0.1)
                             score += lambda_weight * relative_var.squeeze()[concept_idx]
-                    
-                    scores.append(((idx, concept_idx), score))
+                            scores.append(((idx, concept_idx), score))
+
+                                # ==== Storing Variables ===
+                    var_log["variance"].append(((idx, concept_idx), relative_var.detach().cpu().tolist()))
+                    var_log["concept_uncertainty"].append(((idx, concept_idx),concept_prob.detach().cpu().tolist()))
+                    var_log["concept_weight"].append(((idx, concept_idx),weights.detach().cpu().tolist()))
+                    var_log["label_uncertainty"].append(((idx, concept_idx),p.detach().cpu().tolist()))
+
             scores.sort(key=lambda x: -x[1])
             added_idx = [idx for (idx, _) in scores[:self.cfg.training.num_acquired_samples]]
 
-        else:
-            raise NotImplementedError(
-                f"Acquisition function {self.cfg.training.acquisition_func} not implemented"
-            )
+
+            # ==== Other scoring ====
+            if self.cfg.training.acquisition_function == "concept_variance":
+                sorted_pairs = sorted(var_log["variance"], key=lambda x: -x[1])
+                added_idx = [pair for (pair, _) in sorted_pairs if pair in self.train_dataset.pool_index][:self.cfg.training.num_acquired_samples]
+
+            elif self.cfg.training.acquisition_function == "concept_uncertainty":
+                metric_uncertainty = [(x[0], 1 / abs(x[-1] - 0.5)) for x in var_log["concept_uncertainty"]]
+                sorted_pairs = sorted(metric_uncertainty, key=lambda x: -x[1])
+                added_idx = [pair for (pair, _) in sorted_pairs if pair in self.train_dataset.pool_index][:self.cfg.training.num_acquired_samples]
+
+            elif self.cfg.training.acquisition_function == "concept_weight":
+                sorted_pairs = sorted(var_log["concept_weight"], key=lambda x: abs(x[1]))  # absolute value if you want low magnitude
+                added_idx = [pair for (pair, _) in sorted_pairs if pair in self.train_dataset.pool_index][:self.cfg.training.num_acquired_samples]
+    
+            elif self.cfg.training.acquisition_function == "certainty_concept_weight":
+                contribution = [(var_log["variance"][i][0], var_log["variance"][i][-1] * abs(var_log["concept_weight"][i][-1])) for i in range(len(var_log["concept_uncertainty"]))]
+                sorted_pairs = sorted(contribution, key=lambda x: -x[1]) 
+                added_idx = [pair for (pair, _) in sorted_pairs if pair in self.train_dataset.pool_index][:self.cfg.training.num_acquired_samples]
+                    
+            elif self.cfg.training.acquisition_function == "prob_concept_weight":
+                contribution = [(var_log["concept_uncertainty"][i][0], var_log["concept_uncertainty"][i][-1] * abs(var_log["concept_weight"][i][-1])) for i in range(len(var_log["concept_uncertainty"]))]
+                sorted_pairs = sorted(contribution, key=lambda x: -x[1])
+                added_idx = [pair for (pair, _) in sorted_pairs if pair in self.train_dataset.pool_index][:self.cfg.training.num_acquired_samples]
+
+            elif self.cfg.training.acquisition_function == "label_uncertainty":
+                label_uncertainty_metric = [(x[0], 1 / abs(x[-1] - 0.5)) for x in var_log["label_uncertainty"]]
+                sorted_pairs = sorted(label_uncertainty_metric, key=lambda x: -x[1])
+                added_idx = [pair for (pair, _) in sorted_pairs if (pair[0], 0) in self.train_dataset.pool_index][:self.cfg.training.num_acquired_samples]
+            elif self.cfg.training.acquisition_function == "label_entropy":
+                label_uncertainty_metric = [(x[0], bernoulli_stats(x[-1])) for x in var_log["label_uncertainty"]]
+                sorted_pairs = sorted(label_uncertainty_metric, key=lambda x: -x[1])
+                added_idx = [pair for (pair, _) in sorted_pairs if (pair[0], 0) in self.train_dataset.pool_index][:self.cfg.training.num_acquired_samples]
+
+            # elif self.cfg.training.acquisition_function == "temperature":
+            #     sorted_pairs = sorted(self.var_log["temperature"], key=lambda x: -x[1])
+            #     added_idx = [pair for (pair, _) in sorted_pairs if (pair[0], 0) in self.train_dataset.pool_index][:self.cfg.training.num_acquired_samples]
+
+            elif self.cfg.training.acquisition_function == "variance_label_uncertainty":
+                # Combine concept variance and label uncertainty
+                # label_uncertainty_scores = {(x[0], x[1]): 1 / abs(x[-1] - 0.5) for x in self.var_log["label_uncertainty"]}
+                label_uncertainty_scores = [(x[0], bernoulli_stats(x[-1])) for x in var_log["label_uncertainty"]]
+
+                combined_scores = []
+                for (idx, concept_idx), var_score in var_log["variance"]:
+
+                    label_score = next(v for (i, c), v in label_uncertainty_scores if i == idx and c == concept_idx)
+                    # Combine them (we can tune the balance between them with a lambda)
+                    lambda_balance = getattr(self.cfg.training, "variance_label_lambda", 1.0)
+                    combined_score = var_score + lambda_balance * label_score
+                    combined_scores.append(((idx, concept_idx), combined_score))
+
+                combined_scores.sort(key=lambda x: -x[1])
+                added_idx = [idx for (idx, _) in combined_scores[:self.cfg.training.num_acquired_samples]]
+
+            # elif self.cfg.training.acquisition_function == "temperature_concept_uncertainty":
+            #     # Combine temperature uncertainty and concept uncertainty
+            #     combined_scores = []
+            #     for (idx, concept_idx), var_score in self.var_log["variance"]:
+
+            #         label_score = next(v for (i, c), v in self.var_log["temperature"] if i == idx and c == concept_idx)
+
+            #         # Combine them (we can tune the balance between them with a lambda)
+            #         lambda_balance = getattr(self.cfg.training, "variance_label_lambda", 1.0)
+            #         combined_score = var_score + lambda_balance * label_score
+            #         combined_scores.append(((idx, concept_idx), combined_score))
+
+                # combined_scores.sort(key=lambda x: -x[1])
+                # added_idx = [idx for (idx, _) in combined_scores[:self.cfg.training.num_acquired_samples]]                
+
+        # else:
+        #     raise NotImplementedError(
+        #         f"Acquisition function {self.cfg.training.acquisition_func} not implemented"
+        #     )
         return added_idx
     
 
