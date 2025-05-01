@@ -455,54 +455,6 @@ class ActiveTrainer:
 
             combined_scores.sort(key=lambda x: -x[1])
             added_idx = [idx for (idx, _) in combined_scores[:self.cfg.training.num_acquired_samples]]
-
-        elif self.cfg.training.acquisition_function in ["intervention", "intervention_concepts"]:
-            # Shared computation
-            self.model.eval()
-            scores = []
-
-            with torch.no_grad():
-                pool_index = self.train_dataset.pool_index
-                pool_instance_index = list({instance_idx for (instance_idx, _) in pool_index})
-                pool_dataset = torch.utils.data.Subset(self.train_dataset, pool_instance_index)
-                pool_dataloader = DataLoader(
-                    pool_dataset,
-                    batch_size=self.cfg.data.batch_size,
-                    shuffle=False,
-                    collate_fn=collate_fn,
-                )
-                for batch in pool_dataloader:
-                    batch = batch_to_device(batch, self.device)
-                    results = self.model(batch)
-                    idx = batch['pair_idx'][0].item()
-                    weights = results['weights'][0]
-                    concept_logits = results['relative_concept_logits'][0]
-                    reward_pred = torch.sum(weights * concept_logits).item()
-                    
-                    for concept_idx in range(batch['concept_labels'].shape[1]):
-                        if (idx, concept_idx) in self.train_dataset.pool_index:
-                            # Flip the specific concept
-                            intervened_logits = concept_logits.clone()
-                            intervened_logits[concept_idx] = -intervened_logits[concept_idx]  # flip
-
-                            reward_with_intervention = torch.sum(weights * intervened_logits).item()
-
-                            delta = abs(reward_with_intervention - reward_pred)
-
-                            # Now, depending on the mode, maybe add extra score
-                            if self.cfg.training.acquisition_function == "intervention_concepts":
-                                concept_prob = torch.sigmoid(concept_logits)[concept_idx]
-                                concept_uncertainty = min(concept_prob, 1.0 - concept_prob).item()
-                                lambda_weight = getattr(self.cfg.training, "intervention_uncertainty_lambda", 1.0)
-                                final_score = delta + lambda_weight * concept_uncertainty
-                            else:
-                                final_score = delta
-
-                            scores.append(((idx, concept_idx), final_score))
-
-                scores.sort(key=lambda x: -x[1])
-                added_idx = [idx for (idx, _) in scores[:self.cfg.training.num_acquired_samples]]
-
         
         else:
             raise NotImplementedError(
