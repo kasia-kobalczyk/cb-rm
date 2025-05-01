@@ -93,43 +93,6 @@ class PreferenceDataset(Dataset):
     def __len__(self):
         return len(self.pairs_data)
 
-
-
-class ExpandablePreferenceDataset(PreferenceDataset):
-    def __init__(
-            self, 
-            embeddings_path,
-            splits_path,
-            concept_labels_path,
-            preference_labels_path,
-            split='train',
-            num_initial_samples=0,
-        ):
-        super().__init__(
-            embeddings_path=embeddings_path,
-            splits_path=splits_path,
-            concept_labels_path=concept_labels_path,
-            preference_labels_path=preference_labels_path,
-            split=split
-        )
-        self.pool = self.pairs_data.copy()
-        self.used_pair_idx = []
-        initial_samples = list(np.random.choice(
-            self.pool.index,
-            size=num_initial_samples,
-            replace=False,
-        ))
-        self.pairs_data = pd.DataFrame()
-        self.build_dataset(initial_samples)
-
-    def build_dataset(self, added_pair_idx):
-        self.pairs_data = pd.concat([
-            self.pairs_data,
-            self.pool.loc[added_pair_idx]
-        ])
-        self.pool = self.pool[~self.pool.index.isin(self.used_pair_idx)]
-
-
 class ExpandableConceptPreferenceDataset(PreferenceDataset):
     def __init__(
             self, 
@@ -139,6 +102,7 @@ class ExpandableConceptPreferenceDataset(PreferenceDataset):
             preference_labels_path,
             split='train',
             num_initial_samples=0,
+            seed=42,
         ):
         super().__init__(
             embeddings_path=embeddings_path,
@@ -147,6 +111,8 @@ class ExpandableConceptPreferenceDataset(PreferenceDataset):
             preference_labels_path=preference_labels_path,
             split=split
         )
+
+        self.rng = random.Random(seed)
         self.labelled_data = self.pairs_data.copy()
 
         # Filter nan values in the relative_concept_labels column of the labelled pool, note: safeguarding, should not actually be used 
@@ -167,7 +133,6 @@ class ExpandableConceptPreferenceDataset(PreferenceDataset):
         initial_samples = list(random.sample(list(self.pool_index), num_initial_samples))
         self.initial_samples = initial_samples
         self.build_dataset(initial_samples)
-
         
     def build_dataset(self, added_idx):
         """
