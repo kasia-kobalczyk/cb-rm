@@ -11,6 +11,27 @@ from torch.utils.data import Sampler
 def to_tensor(x, device):
     return torch.tensor(x, dtype=torch.float32).unsqueeze(0).to(device)
 
+def bernoulli_stats(p, q=None):
+    eps = 1e-8
+    if not torch.is_tensor(p):
+        p = torch.tensor(p, dtype=torch.float32)
+    p = torch.clamp(p, eps, 1 - eps)
+
+    if q is None:
+        return - (p * p.log() + (1 - p) * (1 - p).log())
+    else:
+        if not torch.is_tensor(q):
+            q = torch.tensor(q, dtype=torch.float32)
+        q = torch.clamp(q, eps, 1 - eps)
+        return p * (p / q).log() + (1 - p) * ((1 - p) / (1 - q)).log()
+
+
+def intervene_logits(relative_concept_logits, concept_idx, weights, intervene_value):
+    intervened_logits = relative_concept_logits.clone()
+    intervened_logits[0, concept_idx] = intervene_value
+    reward = torch.sum(weights * intervened_logits, dim=1)
+    return reward, intervened_logits
+
 class ReplayPrioritySampler(Sampler):
     def __init__(self, dataset, added_idx, keep_ratio=0.2):
         self.dataset = dataset
@@ -248,7 +269,7 @@ class ActiveTrainer:
             list(self.train_dataset.pool_index),
             self.cfg.training.num_acquired_samples
             )
-        elif self.cfg.training.acquisition_function == "variance":
+        elif self.cfg.training.acquisition_function == "concept_variance":
             sorted_pairs = sorted(self.var_log["variance"], key=lambda x: -x[1])
             added_idx = [pair for (pair, _) in sorted_pairs if pair in self.train_dataset.pool_index][:self.cfg.training.num_acquired_samples]
 
@@ -275,6 +296,10 @@ class ActiveTrainer:
             label_uncertainty_metric = [(x[0], 1 / abs(x[-1] - 0.5)) for x in self.var_log["label_uncertainty"]]
             sorted_pairs = sorted(label_uncertainty_metric, key=lambda x: -x[1])
             added_idx = [pair for (pair, _) in sorted_pairs if (pair[0], 0) in self.train_dataset.pool_index][:self.cfg.training.num_acquired_samples]
+        elif self.cfg.training.acquisition_function == "label_entropy":
+            label_uncertainty_metric = [(x[0], bernoulli_stats(x[-1])) for x in self.var_log["label_uncertainty"]]
+            sorted_pairs = sorted(label_uncertainty_metric, key=lambda x: -x[1])
+            added_idx = [pair for (pair, _) in sorted_pairs if (pair[0], 0) in self.train_dataset.pool_index][:self.cfg.training.num_acquired_samples]
 
         elif self.cfg.training.acquisition_function == "temperature":
             sorted_pairs = sorted(self.var_log["temperature"], key=lambda x: -x[1])
@@ -282,13 +307,13 @@ class ActiveTrainer:
 
         elif self.cfg.training.acquisition_function == "variance_label_uncertainty":
             # Combine concept variance and label uncertainty
-            label_uncertainty_scores = {(x[0], x[1]): 1 / abs(x[-1] - 0.5) for x in self.var_log["label_uncertainty"]}
+            # label_uncertainty_scores = {(x[0], x[1]): 1 / abs(x[-1] - 0.5) for x in self.var_log["label_uncertainty"]}
+            label_uncertainty_scores = [(x[0], bernoulli_stats(x[-1])) for x in self.var_log["label_uncertainty"]]
 
             combined_scores = []
             for (idx, concept_idx), var_score in self.var_log["variance"]:
 
                 label_score = next(v for (i, c), v in label_uncertainty_scores if i == idx and c == concept_idx)
-
                 # Combine them (we can tune the balance between them with a lambda)
                 lambda_balance = getattr(self.cfg.training, "variance_label_lambda", 1.0)
                 combined_score = var_score + lambda_balance * label_score
@@ -312,10 +337,10 @@ class ActiveTrainer:
             combined_scores.sort(key=lambda x: -x[1])
             added_idx = [idx for (idx, _) in combined_scores[:self.cfg.training.num_acquired_samples]]                
         
-        elif self.cfg.training.acquisition_function in ["expected_information_gain", "expected_information_gain_concepts"]:
-            # Shared computation
+        elif self.cfg.training.acquisition_function in [ "expected_information_gain",  "expected_information_gain_concepts", "expected_target_uncertainty_reduction",  "intervention_change"]:
+
             self.model.eval()
-            eig_scores = []
+            scores = []
 
             with torch.no_grad():
                 pool_idx = list(self.train_dataset.pool_index)
@@ -342,27 +367,51 @@ class ActiveTrainer:
                     weights = self.model.gating_network(to_tensor(example['example_a']['prompt_embedding'], self.device))
                     reward_diff = torch.sum(weights * relative_concept_logits, dim=1)
 
-                    # Flip the specific concept
-                    intervened_logits = relative_concept_logits.clone()
-                    intervened_logits[0, concept_idx] = -intervened_logits[0, concept_idx]  # flip
+                    concept_logit = relative_concept_logits[0, concept_idx]
+                    concept_prob = torch.sigmoid(-concept_logit)
 
-                    reward_with_intervention = torch.sum(weights * intervened_logits, dim=1).item()
+                    # Before intervention
+                    p = torch.sigmoid(-reward_diff)
 
-                    delta = abs(reward_with_intervention - reward_diff)
+                    # Intervene 0
+                    reward_0, _ = intervene_logits(relative_concept_logits, concept_idx, weights, 10.0)
+                    q0 = torch.sigmoid(-reward_0)
 
-                    # Adding concept score
-                    if self.cfg.training.acquisition_function == "expected_information_gain_concepts":
-                        concept_prob = torch.sigmoid(-relative_concept_logits)[0, concept_idx]
-                        concept_uncertainty = ( 1 / abs(concept_prob - 0.5))
-                        lambda_weight = getattr(self.cfg.training, "eig_uncertainty_lambda", 0.1)
-                        final_score = delta + lambda_weight * concept_uncertainty
-                    else:
-                        final_score = delta
+                    # Intervene 1
+                    reward_1, _ = intervene_logits(relative_concept_logits, concept_idx, weights, -10.0)
+                    q1 = torch.sigmoid(-reward_1)
 
-                    eig_scores.append(((idx, concept_idx), final_score))
+                    # ==== Different scoring ====
+                    if self.cfg.training.acquisition_function.startswith("expected_information_gain"):
+                        kl_0 = bernoulli_stats(p, q0)
+                        kl_1 = bernoulli_stats(p, q1)
+                        score = (concept_prob * kl_1 + (1 - concept_prob) * kl_0).item()
+                        if self.cfg.training.acquisition_function == "expected_information_gain_concepts":                            
+                            lambda_weight = getattr(self.cfg.training, "eig_uncertainty_lambda", 0.1)
+                            score += lambda_weight * relative_var.squeeze()[concept_idx]
 
-                eig_scores.sort(key=lambda x: -x[1])
-                added_idx = [idx for (idx, _) in eig_scores[:self.cfg.training.num_acquired_samples]]
+                    elif self.cfg.training.acquisition_function.startswith("expected_target_uncertainty_reduction"):
+                        entropy_before = bernoulli_stats(p)
+                        entropy_0 = bernoulli_stats(q0)
+                        entropy_1 = bernoulli_stats(q1)
+
+                        expected_entropy_after = concept_prob * entropy_1 + (1 - concept_prob) * entropy_0
+                        score = (entropy_before - expected_entropy_after).item()
+                        if self.cfg.training.acquisition_function == "expected_target_uncertainty_reduction_concepts":                            
+                            lambda_weight = getattr(self.cfg.training, "etr_uncertainty_lambda", 0.1)
+                            score += lambda_weight * relative_var.squeeze()[concept_idx]
+
+
+                    elif self.cfg.training.acquisition_function.startswith("CIS"):
+                        expected_p = (1 - concept_prob) * q0 + concept_prob * q1
+                        score = abs((expected_p - p).item())
+                        if self.cfg.training.acquisition_function == "CIS_concepts":
+                            lambda_weight = getattr(self.cfg.training, "CIS_uncertainty_lambda", 0.1)
+                            score += lambda_weight * relative_var.squeeze()[concept_idx]
+                    
+                    scores.append(((idx, concept_idx), score))
+            scores.sort(key=lambda x: -x[1])
+            added_idx = [idx for (idx, _) in scores[:self.cfg.training.num_acquired_samples]]
 
         else:
             raise NotImplementedError(
