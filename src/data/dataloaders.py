@@ -134,6 +134,7 @@ class ExpandableConceptPreferenceDataset(PreferenceDataset):
             preference_labels_path,
             split='train',
             num_initial_samples=0,
+            seed=42,
         ):
         super().__init__(
             embeddings_path=embeddings_path,
@@ -142,6 +143,8 @@ class ExpandableConceptPreferenceDataset(PreferenceDataset):
             preference_labels_path=preference_labels_path,
             split=split
         )
+
+        self.rng = random.Random(seed)
         self.labelled_data = self.pairs_data.copy()
 
         # Filter nan values in the relative_concept_labels column of the labelled pool, note: safeguarding, should not actually be used 
@@ -159,7 +162,7 @@ class ExpandableConceptPreferenceDataset(PreferenceDataset):
         self.pairs_data['relative_concept_labels'] = list(np.ones(((len(self.pairs_data), len(self.concept_names)))) * -1.0)
         
         # Add initial samples
-        initial_samples = list(random.sample(list(self.pool_index), num_initial_samples))
+        initial_samples = list(self.rng.sample(list(self.pool_index), num_initial_samples))
         self.build_dataset(initial_samples)
 
         
