@@ -5,15 +5,16 @@ defaults:
 training:
   num_epochs: 1
   lr: 1e-4
-  eval_steps: 100000000000
+  eval_steps: 100
   max_num_eval_steps: 10
   seed: 42
   dry_run: False         # Set to true to skip wandb logging and saving
   num_episodes: 100
-  acquisition_function: uniform #'uniform' or 'expected_information_gain'
-  num_acquired_samples: 1024
-  num_initial_samples: 2048
-  keep_ratio: 0.2 # Replay buffer for active learning
+  acquisition_function: uniform
+  num_acquired_samples: 320
+  num_initial_samples: 320
+  buffer_type: ratio
+  keep_ratio: 0.9
 
 loss:
   beta_concept: 1.0              # Weight for concept_loss in total loss
@@ -22,14 +23,14 @@ loss:
 save:
   project_name: active_pref_learning
   wandb_entity: interp_rewards_RLHF
-  run_name_prefix: active_learning_uniform
+  run_name_prefix: active_learning_uniform_test_ratio_0.9
 
 data:
   embeddings_path: './datasets/ultrafeedback/embeddings/meta-llama/Meta-Llama-3-8B/'
   splits_path: './datasets/ultrafeedback/splits.csv'
   concept_labels_path: './datasets/ultrafeedback/concept_labels/openbmb' 
   preference_labels_path: './datasets/ultrafeedback/preference_labels/openbmb_average'
-  batch_size: 512
+  batch_size: 32
  
 resolve_model_target:
   deterministic: src.models.reward_models.BottleneckRewardModel

@@ -91,9 +91,12 @@ class BottleneckRewardModel(nn.Module):
 
 
 class GaussianSampler(nn.Module):
-    def forward(self, mean, variance):
+    def forward(self, mean, variance, n_samples=1):
         q = torch.distributions.Normal(mean, variance)
-        return q.rsample()
+        if n_samples == 1:
+            return q.rsample()
+        else:
+            return q.rsample((n_samples,)) 
 
     def kl_divergence(self, mean, variance):
         p = torch.distributions.Normal(torch.zeros_like(mean), torch.ones_like(variance))  # Standard Gaussian prior
@@ -171,6 +174,7 @@ class ProbabilisticBottleneckRewardModel(BottleneckRewardModel):
             'concept_loss': concept_loss,
             'concept_pseudo_accuracy': concept_pseudo_acc,
             'kl_loss': kl_loss,
+            'relative_mean': relative_mean,
             'relative_var': relative_var,
             'relative_concept_logits': relative_concept_logits,
             'reward_diff': reward_diff,
