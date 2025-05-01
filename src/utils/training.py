@@ -406,6 +406,7 @@ class ActiveTrainer:
         elif self.cfg.training.acquisition_function in [
             "concept_variance", "concept_entropy", "sampling_eig", 
             "eig", "eig_concepts", "CIS", "CIS_concepts",
+            "label_uncertainty", "label_entropy",
         ]:
             metric = self.cfg.training.acquisition_function
             sorted_pairs = sorted(self.uncertainty_map[metric], key=lambda x: -x[1])
@@ -429,16 +430,6 @@ class ActiveTrainer:
             contribution = [(self.uncertainty_map["concept_uncertainty"][i][0], self.uncertainty_map["concept_uncertainty"][i][-1] * abs(self.uncertainty_map["concept_weight"][i][-1])) for i in range(len(self.uncertainty_map["concept_uncertainty"]))]
             sorted_pairs = sorted(contribution, key=lambda x: -x[1])
             added_idx = [pair for (pair, _) in sorted_pairs if pair in self.train_dataset.pool_index][:self.cfg.training.num_acquired_samples]
-
-        elif self.cfg.training.acquisition_function == "label_uncertainty":
-            label_uncertainty_metric = 1/abs(self.uncertainty_map["label_uncertainty"] - 0.5)
-            sorted_pairs = sorted(label_uncertainty_metric, key=lambda x: -x[1])
-            added_idx = [pair for (pair, _) in sorted_pairs if (pair[0], 0) in self.train_dataset.pool_index][:self.cfg.training.num_acquired_samples]
-
-        elif self.cfg.training.acquisition_function == "label_entropy":
-            label_uncertainty_metric = [(x[0], bernoulli_stats(x[-1])) for x in self.uncertainty_map["label_uncertainty"]]
-            sorted_pairs = sorted(label_uncertainty_metric, key=lambda x: -x[1])
-            added_idx = [pair for (pair, _) in sorted_pairs if (pair[0], 0) in self.train_dataset.pool_index][:self.cfg.training.num_acquired_samples]
 
         elif self.cfg.training.acquisition_function == "variance_label_uncertainty":
             # Combine concept variance and label uncertainty
