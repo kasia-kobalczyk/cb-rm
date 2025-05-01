@@ -93,7 +93,6 @@ class ActiveTrainer:
         self.device = cfg.model.device
         self.train_dataset = train_dataset
         self.val_dataloader = val_dataloader
-        # self.var_log = []  
         self.num_epochs = cfg.training.num_epochs
         self.model = model
         self.model.to(self.device)
@@ -406,14 +405,13 @@ class ActiveTrainer:
         elif self.cfg.training.acquisition_function in [
             "concept_variance", "concept_entropy", "sampling_eig", 
             "eig", "eig_concepts", "CIS", "CIS_concepts",
-            "label_uncertainty", "label_entropy",
         ]:
             metric = self.cfg.training.acquisition_function
             sorted_pairs = sorted(self.uncertainty_map[metric], key=lambda x: -x[1])
             added_idx = [pair for (pair, _) in sorted_pairs if pair in self.train_dataset.pool_index][:self.cfg.training.num_acquired_samples]
 
         elif self.cfg.training.acquisition_function == "concept_uncertainty":
-            metric_uncertainty = 1/abs(self.uncertainty_map["concept_uncertainty"] - 0.5)
+            metric_uncertainty = [(x[0], 1 / (abs(x[-1] - 0.5) + 1e-6)) for x in self.uncertainty_map["concept_uncertainty"]]
             sorted_pairs = sorted(metric_uncertainty, key=lambda x: -x[1])
             added_idx = [pair for (pair, _) in sorted_pairs if pair in self.train_dataset.pool_index][:self.cfg.training.num_acquired_samples]
 
@@ -422,13 +420,23 @@ class ActiveTrainer:
             added_idx = [pair for (pair, _) in sorted_pairs if pair in self.train_dataset.pool_index][:self.cfg.training.num_acquired_samples]
         
         elif self.cfg.training.acquisition_function == "certainty_concept_weight":
-            contribution = self.uncertainty_map["concept_variance"] * abs(self.uncertainty_map["concept_weight"])
+            contribution = [(self.uncertainty_map["variance"][i][0], self.uncertainty_map["variance"][i][-1] * abs(self.uncertainty_map["concept_weight"][i][-1])) for i in range(len(self.uncertainty_map["concept_uncertainty"]))]
             sorted_pairs = sorted(contribution, key=lambda x: -x[1]) 
             added_idx = [pair for (pair, _) in sorted_pairs if pair in self.train_dataset.pool_index][:self.cfg.training.num_acquired_samples]
 
         elif self.cfg.training.acquisition_function == "prob_concept_weight":
             contribution = [(self.uncertainty_map["concept_uncertainty"][i][0], self.uncertainty_map["concept_uncertainty"][i][-1] * abs(self.uncertainty_map["concept_weight"][i][-1])) for i in range(len(self.uncertainty_map["concept_uncertainty"]))]
             sorted_pairs = sorted(contribution, key=lambda x: -x[1])
+            added_idx = [pair for (pair, _) in sorted_pairs if pair in self.train_dataset.pool_index][:self.cfg.training.num_acquired_samples]
+        
+        elif self.cfg.training.acquisition_function == "label_uncertainty":
+            label_uncertainty_metric = [(x[0], 1 / (abs(x[-1] - 0.5) + 1e-6)) for x in self.uncertainty_map["label_uncertainty"]]
+            sorted_pairs = sorted(label_uncertainty_metric, key=lambda x: -x[1])
+            added_idx = [pair for (pair, _) in sorted_pairs if pair in self.train_dataset.pool_index][:self.cfg.training.num_acquired_samples]
+
+        elif self.cfg.training.acquisition_function == "label_entropy":
+            label_uncertainty_metric = [(x[0], bernoulli_stats(x[-1])) for x in self.uncertainty_map["label_uncertainty"]]
+            sorted_pairs = sorted(label_uncertainty_metric, key=lambda x: -x[1])
             added_idx = [pair for (pair, _) in sorted_pairs if pair in self.train_dataset.pool_index][:self.cfg.training.num_acquired_samples]
 
         elif self.cfg.training.acquisition_function == "variance_label_uncertainty":
@@ -438,7 +446,7 @@ class ActiveTrainer:
             combined_scores = []
             for (idx, concept_idx), var_score in self.uncertainty_map["concept_variance"]:
 
-                label_score = next(v for (i, c), v in label_uncertainty_scores if i == idx and c == concept_idx)
+                label_score = [v for (i, c), v in label_uncertainty_scores if i == idx and c == concept_idx][0]
                 # Combine them (we can tune the balance between them with a lambda)
                 lambda_balance = getattr(self.cfg.training, "variance_label_lambda", 1.0)
                 combined_score = var_score + lambda_balance * label_score

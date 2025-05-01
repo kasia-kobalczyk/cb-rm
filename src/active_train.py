@@ -58,7 +58,6 @@ def train(cfg: DictConfig):
             save_no = 0
         save_dir = os.path.join(save_dir, f"{run_name_prefix}_{save_no}")
         os.makedirs(save_dir, exist_ok=True)
-
         trainer = setup_trainer(cfg, save_dir)
         cfg = trainer.cfg
         # Save config

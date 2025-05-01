@@ -8,7 +8,7 @@ training:
   eval_steps: 100
   max_num_eval_steps: 10
   seed: 42
-  dry_run: True         # Set to true to skip wandb logging and saving
+  dry_run: False         # Set to true to skip wandb logging and saving
   num_episodes: 100
   acquisition_function: eig
   num_acquired_samples: 320
