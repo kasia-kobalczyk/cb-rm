@@ -115,24 +115,28 @@ class ActiveTrainer:
         self.eval_metrics = [
             'preference_accuracy', 'concept_pseudo_accuracy'
         ]
-        if self.cfg.training.buffer_type == 'ratio':
+        if self.cfg.training.get("buffer_type", None) == 'ratio':
             self.sampler = RatioSampler(self.train_dataset, buffer_ratio=cfg.training.buffer_ratio)
-        elif self.cfg.training.buffer_type == 'fifo':
+        elif self.cfg.training.get("buffer_type", None) == 'fifo':
             self.sampler = FIFOSampler(cfg.training.buffer_capacity)
+        else:
+            self.sampler = None
 
     def train_loop(self):
-        self.sampler.add_new(self.train_dataset.initial_samples)
+        self.sampler and self.sampler.add_new(self.train_dataset.initial_samples)
         self.train_dataloader = DataLoader(
             self.train_dataset,
             batch_size=self.cfg.data.batch_size,
+            shuffle=(self.sampler is None),
             sampler=self.sampler,
             collate_fn=collate_fn,
         )
-        print(f"Starting training with {len(self.sampler.current_indices)} pairs")
+
         if not getattr(self.cfg.training, "active_learning", True):
             print("Running standard training (no active learning episodes)...")
             return self.train_episode()
-
+        
+        print(f"Starting training with {len(self.sampler.current_indices)} pairs")
         for episode in range(self.cfg.training.num_episodes):
             print(f"Episode {episode}/{self.cfg.training.num_episodes}")
             # Run one episode of training
@@ -163,6 +167,10 @@ class ActiveTrainer:
         for epoch in range(self.num_epochs):
             print(f"Epoch {epoch + 1}/{self.num_epochs}")
             for batch in tqdm(self.train_dataloader):
+            # Temporary in place for debugging dont delete TODO: remove at the end
+            # for i, batch in enumerate(tqdm(self.train_dataloader)):
+            #     if i >= 2:
+            #         break
                 self.model.train()
                 self.optimizer.zero_grad()
                 results = self.run_batch(batch)
@@ -223,9 +231,8 @@ class ActiveTrainer:
         self.best_eval_metric = best_eval_metric
 
         # Save the uncertainty map
-        if self.cfg.model.model_type == "probabilistic" and self.cfg.training.acquisition_function not in ["uniform", "intervention", "intervention_concepts"]:
+        if self.cfg.model.model_type == "probabilistic" and self.cfg.training.get("acquisition_function", None) not in ["uniform", "intervention", "intervention_concepts", None]:
             self.compute_uncertainty_map()
-
 
         return best_eval_metric
 
