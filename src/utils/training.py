@@ -298,7 +298,7 @@ class ActiveTrainer:
                     relative_samples = sampler(relative_mean, relative_var, n_samples=16) # [16, batch_size, num_concepts]
                     bs, num_concepts = relative_samples.shape[1], relative_samples.shape[2]
                     relative_samples = relative_samples.reshape(16, -1)
-                    entropy = -torch.mean(torch.log(torch.sigmoid(relative_samples) * (1 - torch.sigmoid(relative_samples))), dim=0)
+                    entropy = -torch.mean(torch.log(torch.sigmoid(-relative_samples) * (1 - torch.sigmoid(-relative_samples))), dim=0)
                     entropy = entropy.reshape(bs, num_concepts)
                     self.uncertainty_map["concept_entropy"].extend(
                         ((idx.item(), k), entropy[b, k].item())
@@ -358,13 +358,13 @@ class ActiveTrainer:
                         concept_labels
                     )
                     r_diff_lCso = torch.sum(weights * s, dim=-1)
-                    p_y_lCso = torch.sigmoid(r_diff_lCso).mean(dim=0)
+                    p_y_lCso = torch.sigmoid(-r_diff_lCso).mean(dim=0)
     
                     for k in range(concept_labels.shape[-1]):                    
                         s = s.repeat(n_samples, 1, 1, 1) # [n_samples, n_samples, batch_size, num_concepts]
                         s[:, :, :, k] = outer_samples[:, :, k] # intervene on the k-th concept
                         r_diff_lCsosk = torch.sum(weights * s, dim=-1)
-                        p_y_lCsosk = torch.sigmoid(r_diff_lCsosk).mean(dim=1) # [n_samples, batch_size]
+                        p_y_lCsosk = torch.sigmoid(-r_diff_lCsosk).mean(dim=1) # [n_samples, batch_size]
                         p_y_lCso = p_y_lCso.repeat(n_samples, 1)
                         eig = p_y_lCso * torch.log(p_y_lCso / p_y_lCsosk) + (1 - p_y_lCso) * torch.log((1 - p_y_lCso) / (1 - p_y_lCsosk))
                         eig = eig.mean(dim=0) # [batch_size]
