@@ -138,7 +138,7 @@ class ActiveTrainer:
         
         print(f"Starting training with {len(self.sampler.current_indices)} pairs")
         for episode in range(self.cfg.training.num_episodes):
-            print(f"Episode {episode}/{self.cfg.training.num_episodes}")
+            print(f"Episode {episode+1}/{self.cfg.training.num_episodes}")
             # Run one episode of training
             best_eval_metric = self.train_episode()
             self.current_episode += 1
@@ -231,7 +231,7 @@ class ActiveTrainer:
         self.best_eval_metric = best_eval_metric
 
         # Save the uncertainty map
-        if self.cfg.model.model_type == "probabilistic" and self.cfg.training.get("acquisition_function", None) not in ["uniform", "intervention", "intervention_concepts", None]:
+        if self.cfg.model.model_type == "probabilistic" and self.cfg.training.get("acquisition_function", None) not in ["uniform", None]:
             self.compute_uncertainty_map()
 
         return best_eval_metric
@@ -248,6 +248,8 @@ class ActiveTrainer:
             "eig_concepts": [],
             "CIS": [],
             "CIS_concepts": [],
+            "etur": [],
+            "etur_concepts": [],
         }
         self.model.eval()
         with torch.no_grad():
@@ -313,7 +315,7 @@ class ActiveTrainer:
                         for k in range(entropy.shape[1])
                     )
 
-                if self.cfg.training.acquisition_function in ["eig", "eig_concepts", "CIS", "CIS_concepts"]:
+                if self.cfg.training.acquisition_function in ["eig", "eig_concepts", "CIS", "CIS_concepts", "etur", "etur_concepts"]:
                     # Before intervention
                     p = torch.sigmoid(-reward_diff)
                     for k in range(batch['concept_labels'].shape[-1]):
@@ -334,8 +336,17 @@ class ActiveTrainer:
    
                             if self.cfg.training.acquisition_function == "eig_concepts":                            
                                 lambda_weight = getattr(self.cfg.training, "eig_uncertainty_lambda", 0.1)
-                                scores += lambda_weight * relative_var.squeeze()[k]
+                                scores += lambda_weight * relative_var.squeeze()[:,k]
 
+                        elif self.cfg.training.acquisition_function.startswith("etur"):
+                            entropy_before = bernoulli_stats(p)
+                            entropy_0 = bernoulli_stats(q0)
+                            entropy_1 = bernoulli_stats(q1)
+                            expected_entropy_after = concept_prob * entropy_1 + (1 - concept_prob) * entropy_0
+                            scores = (entropy_before - expected_entropy_after)
+                            if self.cfg.training.acquisition_function == "etur_concepts":                            
+                                lambda_weight = getattr(self.cfg.training, "etur_uncertainty_lambda", 0.1)
+                                scores += lambda_weight * relative_var.squeeze()[:,k]
 
                         elif self.cfg.training.acquisition_function.startswith("CIS"):
                             expected_p = (1 - concept_prob) * q0 + concept_prob * q1
@@ -343,7 +354,7 @@ class ActiveTrainer:
 
                             if self.cfg.training.acquisition_function == "CIS_concepts":
                                 lambda_weight = getattr(self.cfg.training, "CIS_uncertainty_lambda", 0.1)
-                                scores += lambda_weight * relative_var.squeeze()[k]
+                                scores += lambda_weight * relative_var.squeeze()[:,k]
                         
                         self.uncertainty_map[self.cfg.training.acquisition_function].extend(
                             ((idx.item(), k), scores[b].item())
@@ -411,7 +422,7 @@ class ActiveTrainer:
 
         elif self.cfg.training.acquisition_function in [
             "concept_variance", "concept_entropy", "sampling_eig", 
-            "eig", "eig_concepts", "CIS", "CIS_concepts",
+            "eig", "eig_concepts", "CIS", "CIS_concepts", "etur", "etur_concepts"
         ]:
             metric = self.cfg.training.acquisition_function
             sorted_pairs = sorted(self.uncertainty_map[metric], key=lambda x: -x[1])
@@ -449,10 +460,8 @@ class ActiveTrainer:
         elif self.cfg.training.acquisition_function == "variance_label_uncertainty":
             # Combine concept variance and label uncertainty
             label_uncertainty_scores = [(x[0], bernoulli_stats(x[-1])) for x in self.uncertainty_map["label_uncertainty"]]
-
             combined_scores = []
             for (idx, concept_idx), var_score in self.uncertainty_map["concept_variance"]:
-
                 label_score = [v for (i, c), v in label_uncertainty_scores if i == idx and c == concept_idx][0]
                 # Combine them (we can tune the balance between them with a lambda)
                 lambda_balance = getattr(self.cfg.training, "variance_label_lambda", 1.0)

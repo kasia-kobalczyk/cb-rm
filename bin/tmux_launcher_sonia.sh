@@ -2,21 +2,24 @@
 
 # Acquisition functions and config usage
 ACQUISITION_CONFIGS=(
-    # "uniform:no"
-    # "eig:no"
-    # "sampling_eig:no"
-    # #"eig_concepts:no"
-    # #"expected_target_uncertainty_reduction:no"
-    # #"expected_target_uncertainty_reduction_concepts:no"
-    # "CIS:no"
-    # #"CIS_concepts:no"
-    # "concept_variance:no"
-    #"concept_uncertainty:no"
-    # "concept_weight:no"
+    "uniform:yes"
+    "uniform:no"
+    "concept_variance:no"
+    "concept_entropy:no"
+    "sampling_eig:no"
+    "eig:no"
+    "eig_concepts:no"
+    "CIS:no"
+    "CIS_concepts:no"
+    "etur:no"
+    "etur_concepts:no"
+    "concept_uncertainty:no"
     "certainty_concept_weight:no"
-    # "prob_concept_weight:no"
+    "concept_weight:no"
+    "certainty_concept_weight:no"
+    "prob_concept_weight:no"
     "label_uncertainty:no"
-    #"label_entropy:no"
+    "label_entropy:no"
     "variance_label_uncertainty:no"
 )
 
@@ -37,9 +40,9 @@ do
     tmux send-keys -t $SESSION_NAME "conda activate $CONDA_ENV" C-m
 
     if [ "$USE_CONFIG" == "yes" ]; then
-        CMD="python -m src.active_train --config-name=train_config ++training.acquisition_function='$ACQ'"
+        CMD="python -m src.active_train --config-name=train_config ++training.acquisition_function='$ACQ'  ++save.project_name='active_pref_learning_acq'"
     else
-        CMD="python -m src.active_train --config-name=active_config ++training.acquisition_function='$ACQ' ++save.run_name_prefix='$ACQ'"
+        CMD="python -m src.active_train --config-name=active_config ++training.acquisition_function='$ACQ' ++save.project_name='active_pref_learning_acq'"
     fi
 
     tmux send-keys -t $SESSION_NAME "$CMD" C-m

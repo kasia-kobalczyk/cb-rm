@@ -3,18 +3,19 @@ defaults:
   - _self_
 
 training:
-  num_epochs: 1
+  num_epochs: 100
   lr: 1e-4
-  eval_steps: 100
+  eval_steps: 1000
   max_num_eval_steps: 10
   seed: 42
   dry_run: False         # Set to true to skip wandb logging and saving
   num_episodes: 100
-  acquisition_function: eig
+  acquisition_function: uniform
   num_acquired_samples: 320
   num_initial_samples: 320
   buffer_type: fifo
   buffer_capacity: 32000
+  buffer_ratio: 0.8
 
 loss:
   beta_concept: 1.0              # Weight for concept_loss in total loss
