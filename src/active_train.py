@@ -65,11 +65,11 @@ def train(cfg: DictConfig):
             OmegaConf.save(cfg, f)
             
         # Initialize wandb
-        wandb.config = OmegaConf.to_container(
-            cfg, resolve=True, throw_on_missing=True
-        )
         wandb.init(
-            project=cfg.save.project_name, entity=cfg.save.wandb_entity, name=f"{run_name_prefix}_{save_no}"
+            project=cfg.save.project_name, 
+            entity=cfg.save.wandb_entity, 
+            name=f"{run_name_prefix}_{save_no}",
+            config=OmegaConf.to_container(cfg, resolve=True, throw_on_missing=True)
         )
 
         best_eval_loss = trainer.train_loop()
