@@ -123,7 +123,7 @@ class ActiveTrainer:
             self.sampler = None
 
     def train_loop(self):
-        self.sampler and self.sampler.add_new(self.train_dataset.initial_samples)
+        if self.sampler is not None: self.sampler.add_new(self.train_dataset.initial_samples)
         self.train_dataloader = DataLoader(
             self.train_dataset,
             batch_size=self.cfg.data.batch_size,
