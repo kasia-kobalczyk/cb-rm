@@ -14,7 +14,6 @@ ACQUISITION_CONFIGS=(
     "etur:no"
     "etur_concepts:no"
     "concept_uncertainty:no"
-    "certainty_concept_weight:no"
     "concept_weight:no"
     "certainty_concept_weight:no"
     "prob_concept_weight:no"

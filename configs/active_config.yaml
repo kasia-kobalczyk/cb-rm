@@ -5,11 +5,11 @@ defaults:
 training:
   num_epochs: 100
   lr: 1e-4
-  eval_steps: 1000
+  eval_steps: 100
   max_num_eval_steps: 10
   seed: 42
   dry_run: False         # Set to true to skip wandb logging and saving
-  num_episodes: 100
+  num_episodes: 1
   acquisition_function: uniform
   num_acquired_samples: 320
   num_initial_samples: 320
@@ -22,7 +22,7 @@ loss:
   beta_kl: 0.001
   beta_temperature: 0.001
 save:
-  project_name: active_pref_learning
+  project_name: active_pref_learning_debug
   wandb_entity: interp_rewards_RLHF
   run_name_prefix: active_learning_crm
 
