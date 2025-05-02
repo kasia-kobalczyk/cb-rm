@@ -182,7 +182,6 @@ class ProbabilisticBottleneckRewardModel(BottleneckRewardModel):
             'relative_concept_logits': relative_concept_logits,
             'reward_diff': reward_diff,
             'weights': weights,
-            'relative_concept_logits': relative_concept_logits,
             'temperature': temperature
         }
 
