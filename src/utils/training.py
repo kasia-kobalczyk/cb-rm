@@ -2,11 +2,62 @@ import torch
 import wandb
 import numpy as np
 from tqdm import tqdm
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 import random 
 from src.data.dataloaders import *
 from src.models.reward_models import *
 from torch.utils.data import Sampler
+
+# def compute_grad_norm(module):
+#     with torch.no_grad():
+#         total_norm = 0.0
+#         for p in module.parameters():
+#             if p.grad is not None:
+#                 if torch.isnan(p.grad).any() or torch.isinf(p.grad).any():
+#                     print("WARNING: Gradient has NaN or Inf!", p)
+#                 else:
+#                     param_norm = p.grad.data.norm(2)
+#                     total_norm += param_norm.item() ** 2
+
+#                 # param_norm = p.grad.data.norm(2)
+#                 # total_norm += param_norm.item() ** 2
+#     return total_norm ** 0.5
+def intervene_logits_with_ground_truth(relative_concept_logits, concept_labels, intervention_ratio):
+    """
+    Partially intervenes on relative_concept_logits using ground truth concept_labels.
+    Only a ratio of the valid concepts are intervened (replaced with -logit(label)).
+    """
+    intervened_logits = relative_concept_logits.clone()
+
+    # Get valid mask (concept labels >= 0 are valid for intervention)
+    valid_mask = concept_labels >= 0.0
+
+    # Total number of valid concepts per batch item
+    total_valid = valid_mask.sum(dim=1)
+
+    # How many concepts to intervene per item
+    num_to_intervene = (total_valid.float() * intervention_ratio).ceil().long()
+
+    for b in range(relative_concept_logits.size(0)):
+        valid_indices = valid_mask[b].nonzero(as_tuple=False).squeeze(-1)
+
+        if len(valid_indices) == 0:
+            continue
+
+        # Randomly select indices to intervene
+        n_intervene = min(len(valid_indices), num_to_intervene[b].item())
+
+        selected_indices = valid_indices[torch.randperm(len(valid_indices))[:n_intervene]]
+
+        # Compute ground truth logits from concept_labels
+        gt_logits = -torch.logit(concept_labels[b][selected_indices].clamp(1e-6, 1 - 1e-6))
+        gt_logits = gt_logits.to(intervened_logits.dtype)  # <<< this fixes it
+
+
+        # Overwrite selected logits
+        intervened_logits[b][selected_indices] = gt_logits
+
+    return intervened_logits
 
 def to_tensor(x, device):
     return torch.tensor(x, dtype=torch.float32).unsqueeze(0).to(device)
@@ -96,6 +147,8 @@ class ActiveTrainer:
         self.num_epochs = cfg.training.num_epochs
         self.model = model
         self.model.to(self.device)
+        # for param in self.model.concept_encoder.parameters():
+        #     param.requires_grad = False
         self.optimizer = torch.optim.Adam(
             self.model.parameters(), lr=cfg.training.lr, eps=3e-5
         )
@@ -106,7 +159,7 @@ class ActiveTrainer:
         self.current_episode = 0
 
         self.training_metrics = [
-            'loss', 'preference_accuracy', 'concept_pseudo_accuracy', 'preference_loss', 'concept_loss'
+            'loss', 'preference_accuracy', 'concept_pseudo_accuracy', 'preference_loss', 'concept_loss', 'concept_encoder_grad_norm_t', 'concept_encoder_grad_norm_tc', 'concept_encoder_grad_norm_kltc'
         ]
 
         if self.cfg.model.model_type == "probabilistic":
@@ -121,11 +174,104 @@ class ActiveTrainer:
             self.sampler = FIFOSampler(cfg.training.buffer_capacity)
         else:
             self.sampler = None
+    
+    def run_interventions_on_batch(self, batch, relative_concept_logits, weights, concept_labels, intervention_percentages):
+    
+        intervention_results = {}
+
+        for intervention_ratio in intervention_percentages:
+            # Apply intervention
+            intervened_logits = intervene_logits_with_ground_truth(
+                relative_concept_logits, concept_labels, intervention_ratio
+            )
+
+            # Recompute reward_diff
+            reward_diff = torch.sum(weights * intervened_logits, dim=1)
+
+            # Recompute metrics
+            concept_loss, concept_pseudo_acc, preference_loss, preference_acc = self.model.get_concept_loss(
+                intervened_logits, concept_labels, reward_diff, batch['preference_labels']
+            )
+
+            intervention_results[intervention_ratio] = {
+                'preference_accuracy': preference_acc.item(),
+                'concept_pseudo_accuracy': concept_pseudo_acc.item()
+            }
+            if not self.cfg.training.dry_run:
+                wandb.log({
+                    f"intervene_{int(intervention_ratio * 100)}_preference_accuracy": preference_acc.item(),
+                    f"intervene_{int(intervention_ratio * 100)}_concept_accuracy": concept_pseudo_acc.item()
+                })
+
+        return intervention_results
+
+
+    def eval_with_interventions(self, intervention_percentages=[0.1, 0.2, 0.3, 0.5, 0.8, 1.0]):
+        print("Running intervention evaluation...")
+        
+        self.model.eval()
+        
+        results = {p: {'preference_accuracy': [], 'concept_pseudo_accuracy': []} for p in intervention_percentages}
+
+        with torch.no_grad():
+            for batch in tqdm(self.val_dataloader):
+                batch = batch_to_device(batch, self.device)
+
+                # Forward pass without intervention
+                outputs = self.model(batch)
+                relative_concept_logits = outputs['relative_concept_logits']
+                weights = outputs['weights']
+
+                # Get ground truth concept labels
+                concept_labels = batch['concept_labels']
+
+                for intervention_ratio in intervention_percentages:
+                    # Apply intervention
+                    intervened_logits = intervene_logits_with_ground_truth(
+                        relative_concept_logits, concept_labels, intervention_ratio
+                    )
+
+                    # intervened_logits = -torch.logit(batch['concept_labels'], eps=1e-6)  # eps prevents log(0)
+                    # Recompute reward_diff
+                    reward_diff = torch.sum(weights * intervened_logits, dim=1)
+
+                    # Recompute metrics
+                    concept_loss, concept_pseudo_acc, preference_loss, preference_acc = self.model.get_concept_loss(
+                        intervened_logits, concept_labels, reward_diff, batch['preference_labels']
+                    )
+
+                    results[intervention_ratio]['preference_accuracy'].append(preference_acc.item())
+                    results[intervention_ratio]['concept_pseudo_accuracy'].append(concept_pseudo_acc.item())
+
+        # Aggregate metrics and log to wandb
+        for intervention_ratio in intervention_percentages:
+            mean_pref_acc = np.nanmean(results[intervention_ratio]['preference_accuracy'])
+            mean_concept_acc = np.nanmean(results[intervention_ratio]['concept_pseudo_accuracy'])
+
+            step_log = {
+                f"end_intervene_{int(intervention_ratio * 100)}_preference_accuracy": mean_pref_acc,
+                f"end_intervene_{int(intervention_ratio * 100)}_concept_accuracy": mean_concept_acc,
+            }
+
+            # Log to wandb if not dry_run
+            if not self.cfg.training.dry_run:
+                wandb.log(step_log)
+
+            print(f"[Intervention {int(intervention_ratio * 100)}%] Preference Accuracy: {mean_pref_acc:.3f} | Concept Accuracy: {mean_concept_acc:.3f}")
 
     def train_loop(self):
+
+        # subset_size = self.cfg.training.subset_size  # or however many you want
+        # indices = list(range(subset_size))
+
+        # Wrap the dataset into a subset
+        # subset_train_dataset = Subset(self.train_dataset, indices)
+
         if self.sampler is not None: self.sampler.add_new(self.train_dataset.initial_samples)
+        # g = torch.Generator()
+        # g.manual_seed(42)
         self.train_dataloader = DataLoader(
-            self.train_dataset,
+            self.train_dataset, # subset_train_dataset
             batch_size=self.cfg.data.batch_size,
             shuffle=(self.sampler is None),
             sampler=self.sampler,
@@ -176,6 +322,18 @@ class ActiveTrainer:
                 results = self.run_batch(batch)
                 loss = results["loss"]
                 loss.backward()
+                # loss1 = results["loss_t"]
+                # loss1.backward(retain_graph=True)
+                # concept_encoder_grad_norm_t = compute_grad_norm(self.model.concept_encoder)
+                # loss2 = results["loss_c"]
+                # loss2.backward(retain_graph=True)
+                # concept_encoder_grad_norm_tc = compute_grad_norm(self.model.concept_encoder)
+                # loss3 = results["loss_kl"]
+                # loss3.backward(retain_graph=True)
+                # concept_encoder_grad_norm_kltc = compute_grad_norm(self.model.concept_encoder)
+                results["concept_encoder_grad_norm_t"] = 1 #concept_encoder_grad_norm_t
+                results["concept_encoder_grad_norm_tc"] = 1 #concept_encoder_grad_norm_tc
+                results["concept_encoder_grad_norm_kltc"] = 1 #concept_encoder_grad_norm_kltc
                 self.optimizer.step()
                 
                 if not self.cfg.training.dry_run:
@@ -183,7 +341,7 @@ class ActiveTrainer:
                         {'train_' + k: results[k] for k in self.training_metrics},
                     )
                 if it % self.eval_steps == 0 and it > 0:
-                    val_results = self.eval(self.eval_metrics, dataloader='val', max_steps=self.max_num_eval_steps)
+                    val_results = self.eval(self.eval_metrics, dataloader='val', max_steps=self.max_num_eval_steps, intervention_percentages=[0.1, 0.3, 0.5, 0.8, 1.0])
                     if not self.cfg.training.dry_run:
                         wandb.log(
                             {'val_' + k: val_results[k] for k in self.eval_metrics},
@@ -205,7 +363,7 @@ class ActiveTrainer:
                 it += 1
 
         # Compute eval results after the episode is finished
-        final_val_results = self.eval(self.eval_metrics, dataloader='val', max_steps=self.max_num_eval_steps)
+        final_val_results = self.eval(self.eval_metrics, dataloader='val', max_steps=self.max_num_eval_steps,intervention_percentages=[0.1, 0.3, 0.5, 0.8, 1.0] )
         if not self.cfg.training.dry_run:
             wandb.log(
                 {'val_' + k: final_val_results[k] for k in self.eval_metrics},
@@ -398,7 +556,9 @@ class ActiveTrainer:
         batch = batch_to_device(batch, self.device)
         results = self.model(batch)
         results['loss'] = results['preference_loss'] + self.cfg.loss.beta_concept * results['concept_loss'] 
-        
+        results['loss_t'] = results['preference_loss'] 
+        results['loss_c'] = self.cfg.loss.beta_concept * results['concept_loss'] 
+        results['loss_kl'] = self.cfg.loss.beta_kl * results['kl_loss']
         if 'kl_loss' in results:
             results['loss'] += self.cfg.loss.beta_kl * results['kl_loss']
 
@@ -478,7 +638,7 @@ class ActiveTrainer:
         return added_idx
                 
 
-    def eval(self, metrics, dataloader, max_steps):
+    def eval(self, metrics, dataloader, max_steps, intervention_percentages=None):
         print(f"Evaluating on {dataloader} data")
         if dataloader == 'val':
             dataloader = self.val_dataloader
@@ -493,6 +653,31 @@ class ActiveTrainer:
                 results = self.run_batch(batch)
                 for k in metrics:
                     eval_results[k].append(results[k])
+                if intervention_percentages is not None:
+                    intervention_results = self.run_interventions_on_batch(
+                        batch,
+                        results["relative_concept_logits"],
+                        results["weights"],
+                        batch["concept_labels"],
+                        intervention_percentages,
+                    )
+
+                    for intervention_ratio in intervention_percentages:
+                        mean_pref_acc = np.mean(intervention_results[intervention_ratio]['preference_accuracy'])
+                        mean_concept_acc = np.mean(intervention_results[intervention_ratio]['concept_pseudo_accuracy'])
+
+                        # Make keys
+                        pref_key = f"val_intervene_{int(intervention_ratio * 100)}_preference_accuracy"
+                        concept_key = f"val_intervene_{int(intervention_ratio * 100)}_concept_accuracy"
+
+                        # If not existing yet, create list
+                        if pref_key not in eval_results:
+                            eval_results[pref_key] = []
+                            eval_results[concept_key] = []
+
+                        eval_results[pref_key].append(mean_pref_acc)
+                        eval_results[concept_key].append(mean_concept_acc)
+                
                 it += 1
                 if it > max_steps:
                     break

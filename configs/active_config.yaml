@@ -3,7 +3,7 @@ defaults:
   - _self_
 
 training:
-  num_epochs: 1
+  num_epochs: 10
   lr: 1e-4
   eval_steps: 1000
   max_num_eval_steps: 10
@@ -16,6 +16,7 @@ training:
   buffer_type: fifo
   buffer_capacity: 32000
   buffer_ratio: 0.8
+  
 
 loss:
   beta_concept: 1.0              # Weight for concept_loss in total loss
@@ -45,9 +46,11 @@ train_dataset:
   preference_labels_path: ${data.preference_labels_path}
   split: train
   num_initial_samples: ${training.num_initial_samples}
+  seed: ${training.seed}
 
 val_dataloader:
   _target_: src.data.dataloaders.get_dataloader
   cfg: ${data}
   split: val
+  seed: ${training.seed}
 
