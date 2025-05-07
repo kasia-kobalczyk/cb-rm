@@ -27,28 +27,73 @@ class BottleneckRewardModel(nn.Module):
         self.concept_encoder = concept_encoder
         self.gating_network = gating_network
     
-    def get_preference_loss(self, reward_diff, preference_labels):
-        preference_probs = torch.sigmoid(-reward_diff).unsqueeze(1) # Negative since labels are flipped reward_a > reward_b -> label = 0.0
-        preference_loss = torch.nn.functional.binary_cross_entropy(
-            preference_probs, preference_labels.float(), reduction='none'
-        )
-        preference_loss = torch.mean(preference_loss)
-        # accuracy
-        predictions = torch.round(preference_probs)
-        accuracy = torch.mean((predictions == preference_labels.float()).float())
+    def get_preference_loss(self, reward_diff, preference_labels, concept_mask):
+        if torch.sum(concept_mask)== 0:
+            preference_loss = torch.zeros(1).to(preference_labels.device)
+            accuracy = np.nan 
+        else:
+            # if any concept was -1, do not rely on preference label either
+            row_has_zero = (concept_mask != 1).any(dim=1, keepdim=True)
+            new_mask = (~row_has_zero).float()
+
+            preference_probs = torch.sigmoid(-reward_diff).unsqueeze(1) # Negative since labels are flipped reward_a > reward_b -> label = 0.0
+            preference_probs = preference_probs*new_mask
+            preference_labels = preference_labels*new_mask
+            preference_loss = torch.nn.functional.binary_cross_entropy(
+                preference_probs.float(), preference_labels.float(), reduction='none'
+            )
+            # preference_loss = torch.mean(preference_loss)
+            preference_loss = torch.sum(preference_loss) / torch.sum(new_mask)
+            # accuracy
+            predictions = torch.round(preference_probs)*new_mask
+            accuracy = torch.mean((predictions == preference_labels.float()).float())
         return preference_loss, accuracy
 
-    def get_concept_loss(self, relative_concept_logits, concept_labels):
+    def get_concept_loss(self, relative_concept_logits, concept_labels, reward_diff, preference_labels):
         concept_probs = torch.sigmoid(-relative_concept_logits) 
         concept_mask = torch.where(
-            concept_labels != -1.0,
+            # concept_labels != -1.0, #detected problematic -0.1
+            concept_labels >= 0.0,
             torch.ones_like(concept_probs),
             torch.zeros_like(concept_probs)
         ).to(concept_probs.device)
         
+        # concept_labels = batch['concept_labels']
+
+        # print("Concept Labels - dtype:", concept_labels.dtype)
+        # print("Concept Labels - shape:", concept_labels.shape)
+
+        # min_val = concept_labels.min().item()
+        # max_val = concept_labels.max().item()
+        # any_nan = torch.isnan(concept_labels).any().item()
+        # any_inf = torch.isinf(concept_labels).any().item()
+
+        # print("Concept Labels - Min:", min_val)
+        # print("Concept Labels - Max:", max_val)
+        # print("Concept Labels - Any NaN:", any_nan)
+        # print("Concept Labels - Any Inf:", any_inf)
+
+        # unique_vals = concept_labels.unique()
+        # print("Concept Labels - Unique Values:", unique_vals)
+
+        #  Add debug point if any value is outside [0, 1] and not -1
+        # if min_val < -1 or max_val > 1:
+        #     print("WARNING: concept_labels contain values outside expected [-1, 1] range!")
+        #     # You can put a breakpoint here or raise an error to stop
+        #     pass
+        # if min_val < 0 and min_val > -1:
+        #     print('a')
+        #     pass
+        
+        # if any_nan or any_inf:
+        #     print('a')
+        #     pass
+
         if torch.sum(concept_mask) == 0:
             concept_loss = torch.zeros(1).to(concept_probs.device)
             pseudo_accuracy = np.nan 
+            preference_loss = torch.zeros(1).to(preference_labels.device)
+            accuracy = np.nan 
         else:
             # Apply binary cross entropy loss to each concept dimension independently
             # Use vectorized version of binary cross entropy to avoid for loop
@@ -56,15 +101,70 @@ class BottleneckRewardModel(nn.Module):
             concept_probs = concept_probs * concept_mask
             concept_labels = concept_labels * concept_mask   
             concept_loss = vectorised_loss(
-                concept_probs, concept_labels.float(), reduction='none'
+                concept_probs.float(), concept_labels.float(), reduction='none'
             )
             concept_loss = torch.sum(concept_loss) / torch.sum(concept_mask)
-
+            # concept_loss = torch.zeros(1).to(concept_probs.device)
             hard_labels = torch.round(concept_labels) * concept_mask
             predictions = torch.round(concept_probs) * concept_mask
             pseudo_accuracy = torch.mean((predictions == hard_labels).float())
 
-        return concept_loss, pseudo_accuracy
+            # concepts_loss = []
+            # summed_concepts_loss = 0.0
+
+            # # Apply mask to concept_probs and concept_labels
+            # concept_probs = concept_probs * concept_mask
+            # concept_labels = concept_labels * concept_mask
+
+            # # Compute concept loss per concept dimension
+            # for concept_idx in range(concept_labels.shape[1]):
+            #     # Extract preds and labels for current concept
+            #     preds = concept_probs[:, concept_idx]
+            #     labels = concept_labels[:, concept_idx]
+            #     mask = concept_mask[:, concept_idx]
+
+            #     # Apply mask
+            #     preds = preds[mask.bool()]
+            #     labels = labels[mask.bool()]
+
+            #     # If no valid samples, skip
+            #     if preds.numel() == 0:
+            #         continue
+
+            #     # Compute BCE for this concept
+            #     c_loss = torch.nn.functional.binary_cross_entropy(preds.float(), labels.float(), reduction='mean')
+            #     # concepts_loss.append(c_loss)
+
+            #     # Accumulate
+            #     summed_concepts_loss += c_loss
+
+            # # Final concept loss
+            # concept_loss = summed_concepts_loss
+
+            # # Compute pseudo-accuracy (same as before)
+            # hard_labels = torch.round(concept_labels) * concept_mask
+            # predictions = torch.round(concept_probs) * concept_mask
+            # pseudo_accuracy = torch.mean((predictions == hard_labels).float())
+
+    
+            # if any concept was -1, do not rely on preference label either
+            row_has_zero = (concept_mask != 1).any(dim=1, keepdim=True)
+            new_mask = (~row_has_zero).float()
+
+            preference_probs = torch.sigmoid(-reward_diff).unsqueeze(1) # Negative since labels are flipped reward_a > reward_b -> label = 0.0
+            preference_probs = preference_probs*new_mask
+            preference_labels = preference_labels*new_mask
+            preference_loss = torch.nn.functional.binary_cross_entropy(
+                preference_probs.float(), preference_labels.float(), reduction='none'
+            )
+            # preference_loss = torch.mean(preference_loss)
+            preference_loss = torch.sum(preference_loss) / torch.sum(new_mask)
+            # accuracy
+            predictions = torch.round(preference_probs)*new_mask
+            accuracy = torch.mean((predictions == preference_labels.float()).float())
+        return concept_loss, pseudo_accuracy, preference_loss, accuracy
+
+        # return concept_loss, pseudo_accuracy, concept_mask
 
     def forward(self, batch):
         concept_logits_a = self.concept_encoder(batch['example_a']['prompt_response_embedding'])
@@ -76,13 +176,15 @@ class BottleneckRewardModel(nn.Module):
 
         reward_diff = torch.sum(weights * relative_concept_logits, dim=1)
 
-        preference_loss, preference_acc = self.get_preference_loss(
-            reward_diff, batch['preference_labels']
-        )
+        # concept_loss, concept_pseudo_acc, concept_mask = self.get_concept_loss(
+        #     relative_concept_logits, batch['concept_labels']
+        # )
 
-        concept_loss, concept_pseudo_acc = self.get_concept_loss(
-            relative_concept_logits, batch['concept_labels']
-        )
+
+        concept_loss, concept_pseudo_acc,preference_loss, preference_acc  = self.get_concept_loss(self, relative_concept_logits, batch['concept_labels'], reward_diff, batch['preference_labels'])
+        # preference_loss, preference_acc = self.get_preference_loss(
+        #     reward_diff, batch['preference_labels'], concept_mask
+        # )
 
         return {
             'preference_loss': preference_loss,
@@ -133,9 +235,21 @@ class ProbabilisticBottleneckRewardModel(BottleneckRewardModel):
             self.temperature_network = None
 
     def forward(self, batch):
+        print("Example A embedding stats")
+        print("min:", batch['example_a']['prompt_response_embedding'].min().item())
+        print("max:", batch['example_a']['prompt_response_embedding'].max().item())
+        print("mean:", batch['example_a']['prompt_response_embedding'].mean().item())
+        print("any nan:", torch.isnan(batch['example_a']['prompt_response_embedding']).any().item())
+        print("any inf:", torch.isinf(batch['example_a']['prompt_response_embedding']).any().item())
+
         out_a = self.concept_encoder(batch['example_a']['prompt_response_embedding'])
         out_b = self.concept_encoder(batch['example_b']['prompt_response_embedding'])
-
+        print("output a embedding stats")
+        print("min:", out_a.min().item())
+        print("max:", out_a.max().item())
+        print("mean:", out_a.mean().item())
+        print("any nan:", out_a.any().item())
+        print("any inf:", out_a.any().item())
         mean_a, var_a = out_a.chunk(2, dim=-1)
         mean_b, var_b = out_b.chunk(2, dim=-1)
 
@@ -144,9 +258,25 @@ class ProbabilisticBottleneckRewardModel(BottleneckRewardModel):
 
         relative_mean = mean_a - mean_b
         relative_var = var_a + var_b
+        if torch.isnan(relative_mean).any() or torch.isinf(relative_mean).any():
+            print("Sanity check failed: relative_mean contains NaN or Inf values")
+            print("relative_mean:", relative_mean)
+
+        if torch.isnan(relative_var).any() or torch.isinf(relative_var).any():
+            print("Example A embedding stats")
+            print("min:", batch['example_a']['prompt_response_embedding'].min().item())
+            print("max:", batch['example_a']['prompt_response_embedding'].max().item())
+            print("mean:", batch['example_a']['prompt_response_embedding'].mean().item())
+            print("any nan:", torch.isnan(batch['example_a']['prompt_response_embedding']).any().item())
+            print("any inf:", torch.isinf(batch['example_a']['prompt_response_embedding']).any().item())
+
+            print("Sanity check failed: relative_var contains NaN or Inf values")
+            print("relative_var:", relative_var)
+
+
 
         relative_concept_logits = self.concept_sampler(relative_mean, relative_var)
-        
+        # relative_concept_logits = -torch.logit(batch['concept_labels'], eps=1e-6)  # eps prevents log(0)
         kl_loss = self.concept_sampler.kl_divergence(relative_mean, relative_var) #+ \ 
                   # self.concept_sampler.kl_divergence(mean_a, var_a) + \
                   # self.concept_sampler.kl_divergence(mean_b, var_b)
@@ -162,14 +292,16 @@ class ProbabilisticBottleneckRewardModel(BottleneckRewardModel):
         else:
             temperature = torch.ones_like(reward_diff)
             
+        # concept_loss, concept_pseudo_acc, concept_mask = self.get_concept_loss(
+        #     relative_concept_logits, batch['concept_labels']
+        # )
+        
+        concept_loss, concept_pseudo_acc,preference_loss, preference_acc  = self.get_concept_loss(relative_concept_logits, batch['concept_labels'], reward_diff, batch['preference_labels'])
+        # preference_loss, preference_acc = self.get_preference_loss(
+        #     reward_diff, batch['preference_labels'],concept_mask
+        # )
 
-        preference_loss, preference_acc = self.get_preference_loss(
-            reward_diff, batch['preference_labels']
-        )
 
-        concept_loss, concept_pseudo_acc = self.get_concept_loss(
-            relative_concept_logits, batch['concept_labels']
-        )
 
         return {
             'preference_loss': preference_loss,

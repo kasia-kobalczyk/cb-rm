@@ -2,11 +2,26 @@ import torch
 import wandb
 import numpy as np
 from tqdm import tqdm
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 import random 
 from src.data.dataloaders import *
 from src.models.reward_models import *
 from torch.utils.data import Sampler
+
+# def compute_grad_norm(module):
+#     with torch.no_grad():
+#         total_norm = 0.0
+#         for p in module.parameters():
+#             if p.grad is not None:
+#                 if torch.isnan(p.grad).any() or torch.isinf(p.grad).any():
+#                     print("WARNING: Gradient has NaN or Inf!", p)
+#                 else:
+#                     param_norm = p.grad.data.norm(2)
+#                     total_norm += param_norm.item() ** 2
+
+#                 # param_norm = p.grad.data.norm(2)
+#                 # total_norm += param_norm.item() ** 2
+#     return total_norm ** 0.5
 
 def to_tensor(x, device):
     return torch.tensor(x, dtype=torch.float32).unsqueeze(0).to(device)
@@ -96,6 +111,8 @@ class ActiveTrainer:
         self.num_epochs = cfg.training.num_epochs
         self.model = model
         self.model.to(self.device)
+        # for param in self.model.concept_encoder.parameters():
+        #     param.requires_grad = False
         self.optimizer = torch.optim.Adam(
             self.model.parameters(), lr=cfg.training.lr, eps=3e-5
         )
@@ -106,7 +123,7 @@ class ActiveTrainer:
         self.current_episode = 0
 
         self.training_metrics = [
-            'loss', 'preference_accuracy', 'concept_pseudo_accuracy', 'preference_loss', 'concept_loss'
+            'loss', 'preference_accuracy', 'concept_pseudo_accuracy', 'preference_loss', 'concept_loss' #, 'concept_encoder_grad_norm_t', 'concept_encoder_grad_norm_tc', 'concept_encoder_grad_norm_kltc'
         ]
 
         if self.cfg.model.model_type == "probabilistic":
@@ -123,9 +140,18 @@ class ActiveTrainer:
             self.sampler = None
 
     def train_loop(self):
+
+        # subset_size = self.cfg.training.subset_size  # or however many you want
+        # indices = list(range(subset_size))
+
+        # Wrap the dataset into a subset
+        # subset_train_dataset = Subset(self.train_dataset, indices)
+
         if self.sampler is not None: self.sampler.add_new(self.train_dataset.initial_samples)
+        # g = torch.Generator()
+        # g.manual_seed(42)
         self.train_dataloader = DataLoader(
-            self.train_dataset,
+            self.train_dataset, # subset_train_dataset
             batch_size=self.cfg.data.batch_size,
             shuffle=(self.sampler is None),
             sampler=self.sampler,
@@ -176,6 +202,18 @@ class ActiveTrainer:
                 results = self.run_batch(batch)
                 loss = results["loss"]
                 loss.backward()
+                # loss1 = results["loss_t"]
+                # loss1.backward(retain_graph=True)
+                # concept_encoder_grad_norm_t = compute_grad_norm(self.model.concept_encoder)
+                # loss2 = results["loss_c"]
+                # loss2.backward(retain_graph=True)
+                # concept_encoder_grad_norm_tc = compute_grad_norm(self.model.concept_encoder)
+                # loss3 = results["loss_kl"]
+                # loss3.backward(retain_graph=True)
+                # concept_encoder_grad_norm_kltc = compute_grad_norm(self.model.concept_encoder)
+                # results["concept_encoder_grad_norm_t"] = 1 #concept_encoder_grad_norm_t
+                # results["concept_encoder_grad_norm_tc"] = 1 #concept_encoder_grad_norm_tc
+                # results["concept_encoder_grad_norm_kltc"] = 1 #concept_encoder_grad_norm_kltc
                 self.optimizer.step()
                 
                 if not self.cfg.training.dry_run:
@@ -398,7 +436,9 @@ class ActiveTrainer:
         batch = batch_to_device(batch, self.device)
         results = self.model(batch)
         results['loss'] = results['preference_loss'] + self.cfg.loss.beta_concept * results['concept_loss'] 
-        
+        # results['loss_t'] = results['preference_loss'] 
+        # results['loss_c'] = self.cfg.loss.beta_concept * results['concept_loss'] 
+        # results['loss_kl'] = self.cfg.loss.beta_kl * results['kl_loss']
         if 'kl_loss' in results:
             results['loss'] += self.cfg.loss.beta_kl * results['kl_loss']
 
@@ -478,7 +518,7 @@ class ActiveTrainer:
         return added_idx
                 
 
-    def eval(self, metrics, dataloader, max_steps):
+    def eval(self, metrics, dataloader, max_steps, intervention_percentages=None):
         print(f"Evaluating on {dataloader} data")
         if dataloader == 'val':
             dataloader = self.val_dataloader

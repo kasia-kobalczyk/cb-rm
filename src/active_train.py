@@ -13,6 +13,16 @@ from src.models.reward_models import *
 from src.utils.training import ActiveTrainer
 
 
+def seed_everything(seed):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed(seed)
+    
+    # This will make CUDA operations deterministic (if possible)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
 def setup_trainer(cfg, save_dir=None):
     # Create datasets 
     train_dataset = instantiate(cfg.train_dataset)
@@ -38,14 +48,11 @@ def setup_trainer(cfg, save_dir=None):
     
     return trainer
 
-@hydra.main(version_base=None, config_path=f"../configs", config_name="active_config")
+@hydra.main(version_base=None, config_path=f"../configs", config_name="active_config_llm")
 def train(cfg: DictConfig):
 
     # Set random seed
-    np.random.seed(cfg.training.seed)
-    torch.manual_seed(cfg.training.seed)
-    torch.cuda.manual_seed(cfg.training.seed)
-    random.seed(cfg.training.seed)
+    seed_everything(cfg.training.seed)
 
     if not cfg.training.dry_run:
         # Create save folder and save cfg
