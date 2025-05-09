@@ -41,7 +41,7 @@ class BottleneckRewardModel(nn.Module):
     def get_concept_loss(self, relative_concept_logits, concept_labels):
         concept_probs = torch.sigmoid(-relative_concept_logits) 
         concept_mask = torch.where(
-            concept_labels != -1.0,
+            concept_labels  >=0.0,
             torch.ones_like(concept_probs),
             torch.zeros_like(concept_probs)
         ).to(concept_probs.device)

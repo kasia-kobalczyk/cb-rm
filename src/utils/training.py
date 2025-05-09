@@ -2,11 +2,62 @@ import torch
 import wandb
 import numpy as np
 from tqdm import tqdm
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, Subset
 import random 
 from src.data.dataloaders import *
 from src.models.reward_models import *
 from torch.utils.data import Sampler
+
+# def compute_grad_norm(module):
+#     with torch.no_grad():
+#         total_norm = 0.0
+#         for p in module.parameters():
+#             if p.grad is not None:
+#                 if torch.isnan(p.grad).any() or torch.isinf(p.grad).any():
+#                     print("WARNING: Gradient has NaN or Inf!", p)
+#                 else:
+#                     param_norm = p.grad.data.norm(2)
+#                     total_norm += param_norm.item() ** 2
+
+#                 # param_norm = p.grad.data.norm(2)
+#                 # total_norm += param_norm.item() ** 2
+#     return total_norm ** 0.5
+def intervene_logits_with_ground_truth(relative_concept_logits, concept_labels, intervention_ratio):
+    """
+    Partially intervenes on relative_concept_logits using ground truth concept_labels.
+    Only a ratio of the valid concepts are intervened (replaced with -logit(label)).
+    """
+    intervened_logits = relative_concept_logits.clone()
+
+    # Get valid mask (concept labels >= 0 are valid for intervention)
+    valid_mask = concept_labels >= 0.0
+
+    # Total number of valid concepts per batch item
+    total_valid = valid_mask.sum(dim=1)
+
+    # How many concepts to intervene per item
+    num_to_intervene = (total_valid.float() * intervention_ratio).ceil().long()
+
+    for b in range(relative_concept_logits.size(0)):
+        valid_indices = valid_mask[b].nonzero(as_tuple=False).squeeze(-1)
+
+        if len(valid_indices) == 0:
+            continue
+
+        # Randomly select indices to intervene
+        n_intervene = min(len(valid_indices), num_to_intervene[b].item())
+
+        selected_indices = valid_indices[torch.randperm(len(valid_indices))[:n_intervene]]
+
+        # Compute ground truth logits from concept_labels
+        gt_logits = -torch.logit(concept_labels[b][selected_indices].clamp(1e-6, 1 - 1e-6))
+        gt_logits = gt_logits.to(intervened_logits.dtype)  # <<< this fixes it
+
+
+        # Overwrite selected logits
+        intervened_logits[b][selected_indices] = gt_logits
+
+    return intervened_logits
 
 def to_tensor(x, device):
     return torch.tensor(x, dtype=torch.float32).unsqueeze(0).to(device)
@@ -96,6 +147,8 @@ class ActiveTrainer:
         self.num_epochs = cfg.training.num_epochs
         self.model = model
         self.model.to(self.device)
+        # for param in self.model.concept_encoder.parameters():
+        #     param.requires_grad = False
         self.optimizer = torch.optim.Adam(
             self.model.parameters(), lr=cfg.training.lr, eps=3e-5
         )
@@ -106,7 +159,7 @@ class ActiveTrainer:
         self.current_episode = 0
 
         self.training_metrics = [
-            'loss', 'preference_accuracy', 'concept_pseudo_accuracy', 'preference_loss', 'concept_loss'
+            'loss', 'preference_accuracy', 'concept_pseudo_accuracy', 'preference_loss', 'concept_loss' #, 'concept_encoder_grad_norm_t', 'concept_encoder_grad_norm_tc', 'concept_encoder_grad_norm_kltc'
         ]
 
         if self.cfg.model.model_type == "probabilistic":
@@ -121,11 +174,52 @@ class ActiveTrainer:
             self.sampler = FIFOSampler(cfg.training.buffer_capacity)
         else:
             self.sampler = None
+    def run_interventions_on_batch(self, batch, relative_concept_logits, weights, concept_labels, intervention_percentages):
+    
+        intervention_results = {}
 
+        for intervention_ratio in intervention_percentages:
+            # Apply intervention
+            intervened_logits = intervene_logits_with_ground_truth(
+                relative_concept_logits, concept_labels, intervention_ratio
+            )
+
+            # Recompute reward_diff
+            reward_diff = torch.sum(weights * intervened_logits, dim=1)
+
+            # Recompute metrics
+            concept_loss, concept_pseudo_acc = self.model.get_concept_loss(
+                        intervened_logits, concept_labels
+                    )
+            preference_loss, preference_acc = self.model.get_preference_loss(
+                reward_diff, batch['preference_labels']
+            )
+
+            intervention_results[intervention_ratio] = {
+                'preference_accuracy': preference_acc.item(),
+                'concept_pseudo_accuracy': concept_pseudo_acc.item()
+            }
+            if not self.cfg.training.dry_run:
+                wandb.log({
+                    f"intervene_{int(intervention_ratio * 100)}_preference_accuracy": preference_acc.item(),
+                    f"intervene_{int(intervention_ratio * 100)}_concept_accuracy": concept_pseudo_acc.item()
+                })
+
+        return intervention_results
+    
     def train_loop(self):
+
+        # subset_size = self.cfg.training.subset_size  # or however many you want
+        # indices = list(range(subset_size))
+
+        # Wrap the dataset into a subset
+        # subset_train_dataset = Subset(self.train_dataset, indices)
+
         if self.sampler is not None: self.sampler.add_new(self.train_dataset.initial_samples)
+        # g = torch.Generator()
+        # g.manual_seed(42)
         self.train_dataloader = DataLoader(
-            self.train_dataset,
+            self.train_dataset, # subset_train_dataset
             batch_size=self.cfg.data.batch_size,
             shuffle=(self.sampler is None),
             sampler=self.sampler,
@@ -160,79 +254,117 @@ class ActiveTrainer:
 
 
     def train_episode(self):
+
+        if self.cfg.training.training_mode == "joint":
+            phases = [("joint", self.cfg.training.j_epochs)]
+    
+        elif self.cfg.training.training_mode == "pretrain_joint":
+            phases = [
+                ("concept_only", self.cfg.training.cp_epochs),
+                ("joint", self.cfg.training.j_epochs),
+            ]
+
+        elif self.cfg.training.training_mode == "sequential":
+            phases = [
+                ("concept_only", self.cfg.training.cp_epochs),
+                ("preference_only", self.cfg.training.j_epochs),
+            ]
+
+        else:
+            raise ValueError("Invalid training mode")
         eval_stopping_metric = 'preference_accuracy'
         it = 0
-        
         best_eval_metric = self.best_eval_metric
-        for epoch in range(self.num_epochs):
-            print(f"Epoch {epoch + 1}/{self.num_epochs}")
-            for batch in tqdm(self.train_dataloader):
-            # Temporary in place for debugging dont delete TODO: remove at the end
-            # for i, batch in enumerate(tqdm(self.train_dataloader)):
-            #     if i >= 2:
-            #         break
-                self.model.train()
-                self.optimizer.zero_grad()
-                results = self.run_batch(batch)
-                loss = results["loss"]
-                loss.backward()
-                self.optimizer.step()
+        for mode, epochs in phases:
+            if mode == "preference_only":
+                print("Freezing concept encoder...")
+                for param in self.model.concept_encoder.parameters():
+                    param.requires_grad = False
+            elif mode == "concept_only":
+                print("Unfreezing concept encoder...")
+                for param in self.model.concept_encoder.parameters():
+                    param.requires_grad = True
+
+            print(f"Starting phase: {mode} for {epochs} epochs")
+            for epoch in range(epochs):
+                print(f"Epoch {epoch + 1}/{epochs} [{mode}]")
+                for batch in tqdm(self.train_dataloader):
+                # Temporary in place for debugging dont delete TODO: remove at the end
+                # for i, batch in enumerate(tqdm(self.train_dataloader)):
+                #     if i >= 2:
+                #         break
+                    self.model.train()
+                    self.optimizer.zero_grad()
+                    results = self.run_batch(batch)
+
+                    # Select loss
+                    if mode == "concept_only":
+                        loss = results["concept_loss"]
+                    elif mode == "preference_only":
+                        loss = results["preference_loss"]
+                    elif mode == "joint":
+                        loss = results["loss"]
+                    else:
+                        raise ValueError("Unknown mode")
                 
-                if not self.cfg.training.dry_run:
-                    wandb.log(
-                        {'train_' + k: results[k] for k in self.training_metrics},
-                    )
-                if it % self.eval_steps == 0 and it > 0:
-                    val_results = self.eval(self.eval_metrics, dataloader='val', max_steps=self.max_num_eval_steps)
+                    loss.backward()
+                    self.optimizer.step()
+                    
                     if not self.cfg.training.dry_run:
                         wandb.log(
-                            {'val_' + k: val_results[k] for k in self.eval_metrics},
+                            {'train_' + k: results[k] for k in self.training_metrics},
                         )
-                        eval_metric_value = val_results[eval_stopping_metric]
-                        if 'accuracy' in eval_stopping_metric:
-                            eval_metric_value = -eval_metric_value
-                        if eval_metric_value < best_eval_metric:
-                            best_eval_metric =  eval_metric_value
-
-                            state_dict_save = self.model.state_dict()
-                            # Save best model and optimizer
-                            torch.save(state_dict_save, f"{self.save_dir}/model_best.pt")
-                            torch.save(
-                                self.optimizer.state_dict(),
-                                f"{self.save_dir}/optim_best.pt",
+                    if it % self.eval_steps == 0 and it > 0:
+                        val_results = self.eval(self.eval_metrics, dataloader='val', max_steps=self.max_num_eval_steps)
+                        if not self.cfg.training.dry_run:
+                            wandb.log(
+                                {'val_' + k: val_results[k] for k in self.eval_metrics},
                             )
-                            print(f"Best model saved at step {it}")
-                it += 1
+                            eval_metric_value = val_results[eval_stopping_metric]
+                            if 'accuracy' in eval_stopping_metric:
+                                eval_metric_value = -eval_metric_value
+                            if eval_metric_value < best_eval_metric:
+                                best_eval_metric =  eval_metric_value
 
-        # Compute eval results after the episode is finished
-        final_val_results = self.eval(self.eval_metrics, dataloader='val', max_steps=self.max_num_eval_steps)
-        if not self.cfg.training.dry_run:
-            wandb.log(
-                {'val_' + k: final_val_results[k] for k in self.eval_metrics},
-            )
-            log_dict = {'episode_val_' + k: final_val_results[k] for k in self.eval_metrics}
-            log_dict['episode'] = self.current_episode
-            wandb.log(log_dict)
-            eval_metric_value = final_val_results[eval_stopping_metric]
-            if 'accuracy' in eval_stopping_metric:
-                eval_metric_value = -eval_metric_value
-            if eval_metric_value < best_eval_metric:
-                best_eval_metric =  eval_metric_value
+                                state_dict_save = self.model.state_dict()
+                                # Save best model and optimizer
+                                torch.save(state_dict_save, f"{self.save_dir}/model_best.pt")
+                                torch.save(
+                                    self.optimizer.state_dict(),
+                                    f"{self.save_dir}/optim_best.pt",
+                                )
+                                print(f"Best model saved at step {it}")
+                    it += 1
 
-                state_dict_save = self.model.state_dict()
-
-                torch.save(state_dict_save, f"{self.save_dir}/model_best.pt")
-                torch.save(
-                    self.optimizer.state_dict(),
-                    f"{self.save_dir}/optim_best.pt",
+            # Compute eval results after the episode is finished
+            final_val_results = self.eval(self.eval_metrics, dataloader='val', max_steps=self.max_num_eval_steps,intervention_percentages=[0.2, 0.5, 0.9])
+            if not self.cfg.training.dry_run:
+                wandb.log(
+                    {'val_' + k: final_val_results[k] for k in self.eval_metrics},
                 )
-                print(f"Best model saved at step {it}")
+                log_dict = {'episode_val_' + k: final_val_results[k] for k in self.eval_metrics}
+                log_dict['episode'] = self.current_episode
+                wandb.log(log_dict)
+                eval_metric_value = final_val_results[eval_stopping_metric]
+                if 'accuracy' in eval_stopping_metric:
+                    eval_metric_value = -eval_metric_value
+                if eval_metric_value < best_eval_metric:
+                    best_eval_metric =  eval_metric_value
 
-        self.best_eval_metric = best_eval_metric
+                    state_dict_save = self.model.state_dict()
 
-        # Save the uncertainty map
-        if self.cfg.model.model_type == "probabilistic" and self.cfg.training.get("acquisition_function", None) not in ["uniform", None]:
-            self.compute_uncertainty_map()
+                    torch.save(state_dict_save, f"{self.save_dir}/model_best.pt")
+                    torch.save(
+                        self.optimizer.state_dict(),
+                        f"{self.save_dir}/optim_best.pt",
+                    )
+                    print(f"Best model saved at step {it}")
+
+            self.best_eval_metric = best_eval_metric
+
+            # Save the uncertainty map
+            if self.cfg.model.model_type == "probabilistic" and self.cfg.training.get("acquisition_function", None) not in ["uniform", None]:
+                self.compute_uncertainty_map()
 
         return best_eval_metric
 
@@ -398,7 +530,9 @@ class ActiveTrainer:
         batch = batch_to_device(batch, self.device)
         results = self.model(batch)
         results['loss'] = results['preference_loss'] + self.cfg.loss.beta_concept * results['concept_loss'] 
-        
+        # results['loss_t'] = results['preference_loss'] 
+        # results['loss_c'] = self.cfg.loss.beta_concept * results['concept_loss'] 
+        # results['loss_kl'] = self.cfg.loss.beta_kl * results['kl_loss']
         if 'kl_loss' in results:
             results['loss'] += self.cfg.loss.beta_kl * results['kl_loss']
 
@@ -478,7 +612,7 @@ class ActiveTrainer:
         return added_idx
                 
 
-    def eval(self, metrics, dataloader, max_steps):
+    def eval(self, metrics, dataloader, max_steps, intervention_percentages=None):
         print(f"Evaluating on {dataloader} data")
         if dataloader == 'val':
             dataloader = self.val_dataloader
@@ -493,6 +627,30 @@ class ActiveTrainer:
                 results = self.run_batch(batch)
                 for k in metrics:
                     eval_results[k].append(results[k])
+                    if intervention_percentages is not None:
+                        intervention_results = self.run_interventions_on_batch(
+                            batch,
+                            results["relative_concept_logits"],
+                            results["weights"],
+                            batch["concept_labels"],
+                            intervention_percentages,
+                        )
+
+                        for intervention_ratio in intervention_percentages:
+                            mean_pref_acc = np.mean(intervention_results[intervention_ratio]['preference_accuracy'])
+                            mean_concept_acc = np.mean(intervention_results[intervention_ratio]['concept_pseudo_accuracy'])
+
+                            # Make keys
+                            pref_key = f"val_intervene_{int(intervention_ratio * 100)}_preference_accuracy"
+                            concept_key = f"val_intervene_{int(intervention_ratio * 100)}_concept_accuracy"
+
+                            # If not existing yet, create list
+                            if pref_key not in eval_results:
+                                eval_results[pref_key] = []
+                                eval_results[concept_key] = []
+
+                            eval_results[pref_key].append(mean_pref_acc)
+                            eval_results[concept_key].append(mean_concept_acc)
                 it += 1
                 if it > max_steps:
                     break

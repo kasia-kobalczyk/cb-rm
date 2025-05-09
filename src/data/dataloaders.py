@@ -71,6 +71,7 @@ class PreferenceDataset(Dataset):
             concept_labels = torch.ones(len(self.concept_names)) * -1.0
         else:
             concept_labels = torch.tensor(concept_labels)
+        # concept_labels = torch.ones(len(self.concept_names)) * -1.0
 
         return {
             'example_a': self.construct_example(idx_a),
