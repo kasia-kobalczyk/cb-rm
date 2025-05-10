@@ -22,20 +22,43 @@ class BottleneckRewardModel(nn.Module):
             self, 
             concept_encoder,
             gating_network,
+            unmask_y
         ):
         super(BottleneckRewardModel, self).__init__()
         self.concept_encoder = concept_encoder
         self.gating_network = gating_network
+        self.unmask_y = unmask_y
     
-    def get_preference_loss(self, reward_diff, preference_labels):
-        preference_probs = torch.sigmoid(-reward_diff).unsqueeze(1) # Negative since labels are flipped reward_a > reward_b -> label = 0.0
-        preference_loss = torch.nn.functional.binary_cross_entropy(
-            preference_probs, preference_labels.float(), reduction='none'
-        )
-        preference_loss = torch.mean(preference_loss)
-        # accuracy
-        predictions = torch.round(preference_probs)
-        accuracy = torch.mean((predictions == preference_labels.float()).float())
+    def get_preference_loss(self, reward_diff, preference_labels, concept_mask):
+        if torch.sum(concept_mask) == 0:
+            preference_loss = torch.zeros(1).to(preference_labels.device)
+            accuracy = np.nan 
+        else:
+            if self.unmask_y:
+                preference_probs = torch.sigmoid(-reward_diff).unsqueeze(1) # Negative since labels are flipped reward_a > reward_b -> label = 0.0
+                preference_loss = torch.nn.functional.binary_cross_entropy(
+                    preference_probs.float(), preference_labels.float(), reduction='none'
+                )
+                preference_loss = torch.mean(preference_loss)
+                predictions = torch.round(preference_probs)
+                accuracy = torch.mean((predictions == preference_labels.float()).float())
+            else:
+                preference_probs = torch.sigmoid(-reward_diff).unsqueeze(1) # Negative since labels are flipped reward_a > reward_b -> label = 0.0
+                row_has_zero = (concept_mask != 1).any(dim=1, keepdim=True)
+                new_mask = (~row_has_zero).float()
+
+                preference_probs = preference_probs*new_mask
+                preference_labels = preference_labels*new_mask
+                preference_loss = torch.nn.functional.binary_cross_entropy(
+                    preference_probs.float(), preference_labels.float(), reduction='none'
+                )
+                # preference_loss = torch.mean(preference_loss)
+                preference_loss = torch.sum(preference_loss) / torch.sum(new_mask)
+                # accuracy
+                # predictions = torch.round(preference_probs)
+                predictions = torch.round(preference_probs)*new_mask
+                accuracy = torch.mean((predictions == preference_labels.float()).float())
+            
         return preference_loss, accuracy
 
     def get_concept_loss(self, relative_concept_logits, concept_labels):
@@ -64,7 +87,7 @@ class BottleneckRewardModel(nn.Module):
             predictions = torch.round(concept_probs) * concept_mask
             pseudo_accuracy = torch.mean((predictions == hard_labels).float())
 
-        return concept_loss, pseudo_accuracy
+        return concept_loss, pseudo_accuracy, concept_mask
 
     def forward(self, batch):
         concept_logits_a = self.concept_encoder(batch['example_a']['prompt_response_embedding'])
@@ -115,8 +138,9 @@ class ProbabilisticBottleneckRewardModel(BottleneckRewardModel):
             gating_network,
             concept_sampler,
             use_temperature=False,
+            unmask_y=True
         ):
-        super(ProbabilisticBottleneckRewardModel, self).__init__(concept_encoder, gating_network)
+        super(ProbabilisticBottleneckRewardModel, self).__init__(concept_encoder, gating_network, unmask_y)
 
         self.concept_sampler_name = concept_sampler
         self.use_temperature = use_temperature
@@ -162,15 +186,13 @@ class ProbabilisticBottleneckRewardModel(BottleneckRewardModel):
         else:
             temperature = torch.ones_like(reward_diff)
             
-
-        preference_loss, preference_acc = self.get_preference_loss(
-            reward_diff, batch['preference_labels']
-        )
-
-        concept_loss, concept_pseudo_acc = self.get_concept_loss(
+        concept_loss, concept_pseudo_acc, concept_mask = self.get_concept_loss(
             relative_concept_logits, batch['concept_labels']
         )
-
+        preference_loss, preference_acc = self.get_preference_loss(
+            reward_diff, batch['preference_labels'], concept_mask
+        )
+        
         return {
             'preference_loss': preference_loss,
             'preference_accuracy': preference_acc,

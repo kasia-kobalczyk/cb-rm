@@ -34,7 +34,7 @@ def setup_trainer(cfg, save_dir=None):
     cfg.model.model_builder.gating_network.output_dim = num_concepts
     
     # Create model
-    model = instantiate(cfg.model.model_builder, use_temperature=cfg.model.use_temperature)
+    model = instantiate(cfg.model.model_builder, use_temperature=cfg.model.use_temperature, unmask_y=cfg.model.unmask_y)
     model.to(cfg.model.device)
     
     # Create Trainer

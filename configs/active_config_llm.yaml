@@ -18,7 +18,7 @@ training:
   buffer_ratio: 0.8
   training_mode: "joint"   # options: joint | sequential | pretrain_joint
   cp_epochs: 100
-  j_epochs: 100
+  j_epochs: 50
   s_epochs: 50
   active_learning: true
 
@@ -28,7 +28,7 @@ loss:
   beta_kl: 0.001
   beta_temperature: 0.001
 save:
-  project_name: active_pref_learning_tester
+  project_name: active_pref_learning_maytenth
   wandb_entity: interp_rewards_RLHF
   run_name_prefix: active_learning_crm
 
@@ -50,6 +50,7 @@ train_dataset:
   concept_labels_path: ${data.concept_labels_path}
   preference_labels_path: ${data.preference_labels_path}
   split: train
+  random_init: True
   num_initial_samples: ${training.num_initial_samples}
 
 val_dataloader:

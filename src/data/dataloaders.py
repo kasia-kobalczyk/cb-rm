@@ -103,6 +103,7 @@ class ExpandableConceptPreferenceDataset(PreferenceDataset):
             preference_labels_path,
             split='train',
             num_initial_samples=0,
+            random_init=False,
             seed=42,
         ):
         super().__init__(
@@ -131,8 +132,23 @@ class ExpandableConceptPreferenceDataset(PreferenceDataset):
         self.pairs_data['relative_concept_labels'] = list(np.ones(((len(self.pairs_data), len(self.concept_names)))) * -1.0)
         
         # Add initial samples
-        initial_samples = list(random.sample(list(self.pool_index), num_initial_samples))
-        self.initial_samples = initial_samples
+        if random_init:
+            initial_samples = list(random.sample(list(self.pool_index), num_initial_samples))
+            self.initial_samples = initial_samples
+        else:
+            # Step 1: extract unique instance IDs from pool_index
+            pool_instances = list({idx for (idx, _) in self.pool_index})
+
+            # Step 2: sample instance IDs
+            num_instances = min(num_initial_samples, len(pool_instances))
+            selected_instances = random.sample(pool_instances, num_instances)
+
+            # Step 3: for each instance, add all concepts [0-9]
+            initial_samples = [(idx, concept) for idx in selected_instances for concept in range(10)]
+
+            # Assign and build dataset
+            self.initial_samples = initial_samples
+
         self.build_dataset(initial_samples)
         
     def build_dataset(self, added_idx):

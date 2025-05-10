@@ -7,6 +7,7 @@ import random
 from src.data.dataloaders import *
 from src.models.reward_models import *
 from torch.utils.data import Sampler
+from copy import deepcopy
 
 # def compute_grad_norm(module):
 #     with torch.no_grad():
@@ -84,34 +85,36 @@ def intervene_logits(relative_concept_logits, concept_idx, weights, intervene_va
     return reward, intervened_logits
 
 class RatioSampler(Sampler):
-    def __init__(self, dataset, buffer_ratio=0.2):
+    def __init__(self, dataset,buffer_capacity =32000 , buffer_ratio=0.2):
         self.dataset = dataset
+        self.buffer_capacity = buffer_capacity
         self.buffer_ratio = buffer_ratio
 
-        # Collect all valid indices
-        self.all_indices = list(range(len(self.dataset)))
+        # Collect all indices
+        self.current_indices = []
 
     def add_new(self, added_idx):
          # Convert (idx, concept_idx) -> example_idx (row in dataset)
-        added_rows = {i for i, _ in added_idx}
-        
-        # Remaining indices
-        remaining = list(set(self.all_indices) - added_rows)
 
-        # Replay sampling
-        n_keep = int(len(remaining) * self.buffer_ratio)
-        kept_replay = random.sample(remaining, n_keep) if n_keep > 0 else []
+        added_rows = list({i for (i, _) in added_idx})
+        old_rows = [i for i in self.current_indices if i not in added_rows]
 
-        # Combine
-        self.current_indices = list(added_rows) + kept_replay
+        # If buffer would overflow, sample a ratio of old rows
+        if len(added_rows) + len(old_rows) > self.buffer_capacity:
+            n_keep = int(self.buffer_capacity * self.buffer_ratio)
+            kept_old = random.sample(old_rows, min(len(old_rows), n_keep))
+        else:
+            kept_old = old_rows
+
+        self.current_indices = added_rows + kept_old
         random.shuffle(self.current_indices)
 
     def __iter__(self):
         return iter(self.current_indices)
 
     def __len__(self):
-        return int(len(self.dataset) * self.buffer_ratio) + len(self.added_idx)
-
+        return len(self.current_indices)
+    
 class FIFOSampler(Sampler):
     def __init__(self, buffer_capacity):
         self.buffer_capacity = buffer_capacity
@@ -145,7 +148,9 @@ class ActiveTrainer:
         self.train_dataset = train_dataset
         self.val_dataloader = val_dataloader
         self.num_epochs = cfg.training.num_epochs
-        self.model = model
+        self.model = model       
+        # self.model_orig = deepcopy(model)
+
         self.model.to(self.device)
         # for param in self.model.concept_encoder.parameters():
         #     param.requires_grad = False
@@ -169,7 +174,7 @@ class ActiveTrainer:
             'preference_accuracy', 'concept_pseudo_accuracy'
         ]
         if self.cfg.training.get("buffer_type", None) == 'ratio':
-            self.sampler = RatioSampler(self.train_dataset, buffer_ratio=cfg.training.buffer_ratio)
+            self.sampler = RatioSampler(self.train_dataset, cfg.training.buffer_capacity, cfg.training.buffer_ratio)
         elif self.cfg.training.get("buffer_type", None) == 'fifo':
             self.sampler = FIFOSampler(cfg.training.buffer_capacity)
         else:
@@ -248,7 +253,14 @@ class ActiveTrainer:
                 collate_fn=collate_fn,
             )
             print(f"Added {len(added_idx)} concept labels to the training set")
-            # Load the best model and optimizer: # TO DO: may instead train from scratch (?)
+            # Load the best model and optimizer: # TO DO: may instead train from scratch (?) # Doesnt work better
+            # self.model = deepcopy(self.model_orig)
+            # self.model.to(self.device)
+            # self.optimizer = torch.optim.Adam(
+            #     self.model.parameters(), lr=self.cfg.training.lr, eps=3e-5
+            # )
+
+            
             self.model.load_state_dict(torch.load(f"{self.save_dir}/model_best.pt"))
             self.optimizer.load_state_dict(torch.load(f"{self.save_dir}/optim_best.pt"))
 
@@ -363,7 +375,7 @@ class ActiveTrainer:
             self.best_eval_metric = best_eval_metric
 
             # Save the uncertainty map
-            if self.cfg.model.model_type == "probabilistic" and self.cfg.training.get("acquisition_function", None) not in ["uniform", None]:
+            if self.cfg.model.model_type == "probabilistic" and self.cfg.training.get("acquisition_function", None) not in ["uniform", "uniform_2", None]:
                 self.compute_uncertainty_map()
 
         return best_eval_metric
@@ -553,6 +565,14 @@ class ActiveTrainer:
             list(self.train_dataset.pool_index),
             self.cfg.training.num_acquired_samples
             )
+        elif self.cfg.training.acquisition_function =="uniform_2":
+                # Get unique instance IDs from the pool
+            pool_instances = list({idx for (idx, _) in self.train_dataset.pool_index})
+
+            # Randomly sample instance IDs
+            num_samples = min(self.cfg.training.num_acquired_samples, len(pool_instances))
+            selected_instances = random.sample(pool_instances, num_samples)
+            added_idx = [(idx, concept) for idx in selected_instances for concept in range(10)]
 
         elif self.cfg.training.acquisition_function in [
             "concept_variance", "concept_entropy", "sampling_eig", 
@@ -627,30 +647,30 @@ class ActiveTrainer:
                 results = self.run_batch(batch)
                 for k in metrics:
                     eval_results[k].append(results[k])
-                    if intervention_percentages is not None:
-                        intervention_results = self.run_interventions_on_batch(
-                            batch,
-                            results["relative_concept_logits"],
-                            results["weights"],
-                            batch["concept_labels"],
-                            intervention_percentages,
-                        )
+                    # if intervention_percentages is not None:
+                    #     intervention_results = self.run_interventions_on_batch(
+                    #         batch,
+                    #         results["relative_concept_logits"],
+                    #         results["weights"],
+                    #         batch["concept_labels"],
+                    #         intervention_percentages,
+                    #     )
 
-                        for intervention_ratio in intervention_percentages:
-                            mean_pref_acc = np.mean(intervention_results[intervention_ratio]['preference_accuracy'])
-                            mean_concept_acc = np.mean(intervention_results[intervention_ratio]['concept_pseudo_accuracy'])
+                    #     for intervention_ratio in intervention_percentages:
+                    #         mean_pref_acc = np.mean(intervention_results[intervention_ratio]['preference_accuracy'])
+                    #         mean_concept_acc = np.mean(intervention_results[intervention_ratio]['concept_pseudo_accuracy'])
 
-                            # Make keys
-                            pref_key = f"val_intervene_{int(intervention_ratio * 100)}_preference_accuracy"
-                            concept_key = f"val_intervene_{int(intervention_ratio * 100)}_concept_accuracy"
+                    #         # Make keys
+                    #         pref_key = f"val_intervene_{int(intervention_ratio * 100)}_preference_accuracy"
+                    #         concept_key = f"val_intervene_{int(intervention_ratio * 100)}_concept_accuracy"
 
-                            # If not existing yet, create list
-                            if pref_key not in eval_results:
-                                eval_results[pref_key] = []
-                                eval_results[concept_key] = []
+                    #         # If not existing yet, create list
+                    #         if pref_key not in eval_results:
+                    #             eval_results[pref_key] = []
+                    #             eval_results[concept_key] = []
 
-                            eval_results[pref_key].append(mean_pref_acc)
-                            eval_results[concept_key].append(mean_concept_acc)
+                    #         eval_results[pref_key].append(mean_pref_acc)
+                    #         eval_results[concept_key].append(mean_concept_acc)
                 it += 1
                 if it > max_steps:
                     break
