@@ -8,6 +8,7 @@ from src.data.dataloaders import *
 from src.models.reward_models import *
 from torch.utils.data import Sampler
 from copy import deepcopy
+import torch.nn.functional as F
 
 # def compute_grad_norm(module):
 #     with torch.no_grad():
@@ -79,9 +80,12 @@ def bernoulli_stats(p, q=None):
 
 
 def intervene_logits(relative_concept_logits, concept_idx, weights, intervene_value):
+# def intervene_logits(relative_concept_logits, concept_idx, model_scal, intervene_value):
     intervened_logits = relative_concept_logits.clone()
     intervened_logits[:, concept_idx] = intervene_value
     reward = torch.sum(weights * intervened_logits, dim=1)
+    # reward = model_scal(intervened_logits)
+    
     return reward, intervened_logits
 
 class RatioSampler(Sampler):
@@ -332,6 +336,11 @@ class ActiveTrainer:
                             wandb.log(
                                 {'val_' + k: val_results[k] for k in self.eval_metrics},
                             )
+                            # with torch.no_grad():
+                            #     scalar_weights = F.softmax(self.model.scalarizer.logits.detach(), dim=0).cpu().numpy()
+                            #     # scalar_weights = self.model.scalarizer.linear.weight.detach().cpu().numpy().flatten()
+                            #     concept_names = self.train_dataset.concept_names
+                            #     wandb.log({f"scalar_weights/{name}": w for name, w in zip(concept_names, scalar_weights)})
                             eval_metric_value = val_results[eval_stopping_metric]
                             if 'accuracy' in eval_stopping_metric:
                                 eval_metric_value = -eval_metric_value
@@ -465,9 +474,11 @@ class ActiveTrainer:
                     for k in range(batch['concept_labels'].shape[-1]):
                         # Intervene 0
                         reward_0, _ = intervene_logits(relative_concept_logits, k, weights, 10.0)
+                        # reward_0, _ = intervene_logits(relative_concept_logits, k, self.model.scalarizer, 10.0)
                         q0 = torch.sigmoid(-reward_0)
                         # Intervene 1
                         reward_1, _ = intervene_logits(relative_concept_logits, k, weights, -10.0)
+                        # reward_1, _ = intervene_logits(relative_concept_logits, k,  self.model.scalarizer, -10.0)
                         q1 = torch.sigmoid(-reward_1)
                         
                         concept_logit = relative_concept_logits[0, k]
@@ -570,9 +581,9 @@ class ActiveTrainer:
             pool_instances = list({idx for (idx, _) in self.train_dataset.pool_index})
 
             # Randomly sample instance IDs
-            num_samples = min(self.cfg.training.num_acquired_samples, len(pool_instances))
+            num_samples = min(int(self.cfg.training.num_acquired_samples/len(self.train_dataset.concept_names)), len(pool_instances))
             selected_instances = random.sample(pool_instances, num_samples)
-            added_idx = [(idx, concept) for idx in selected_instances for concept in range(10)]
+            added_idx = [(idx, concept) for idx in selected_instances for concept in range(len(self.train_dataset.concept_names))]
 
         elif self.cfg.training.acquisition_function in [
             "concept_variance", "concept_entropy", "sampling_eig", 
@@ -645,6 +656,10 @@ class ActiveTrainer:
         with torch.no_grad():
             for batch in dataloader:
                 results = self.run_batch(batch)
+                if 'relative_concept_logits' in results:
+                    if 'avg_concepts' not in eval_results:
+                        eval_results['avg_concepts'] = torch.sigmoid(-results['relative_concept_logits']).detach().cpu()
+                        eval_results['lbl_concepts'] = batch["concept_labels"].detach().cpu()
                 for k in metrics:
                     eval_results[k].append(results[k])
                     # if intervention_percentages is not None:
@@ -675,6 +690,15 @@ class ActiveTrainer:
                 if it > max_steps:
                     break
                         
+            if 'avg_concepts' in eval_results:
+                avg_concepts = eval_results['avg_concepts'][0,:] 
+                concepts = eval_results['lbl_concepts'][0,:]
+                weights = results['weights'][0,:].detach().cpu()
+                concept_names = getattr(self.train_dataset, "concept_names", [f"concept_{i}" for i in range(avg_concepts.shape[-1])])
+                wandb.log({f"concept_values/{name}": val for name, val in zip(concept_names, avg_concepts.numpy())})
+                wandb.log({f"concept_labes/{name}": val for name, val in zip(concept_names, concepts.numpy())})
+                wandb.log({f"scalar_weights/{name}": val for name, val in zip(concept_names, weights.numpy())})
+                del eval_results['avg_concepts']  # clean up
             for k in metrics:
                 eval_results[k] = torch.mean(torch.tensor(eval_results[k])).item()
 

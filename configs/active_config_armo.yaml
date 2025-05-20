@@ -9,18 +9,19 @@ training:
   max_num_eval_steps: 10
   seed: 42
   dry_run: False         # Set to true to skip wandb logging and saving
-  num_episodes: 20
+  num_episodes: 100
   acquisition_function: uniform
   num_acquired_samples: 320
   num_initial_samples: 320
   buffer_type: fifo
-  buffer_capacity: 32000
+  buffer_capacity: 373140
   buffer_ratio: 0.8
-  training_mode: "joint"   # options: joint | sequential | pretrain_joint
-  cp_epochs: 100
-  j_epochs: 100
-  s_epochs: 50
+  training_mode: "sequential"   # options: joint | sequential | pretrain_joint
+  cp_epochs: 1
+  j_epochs: 1
+  s_epochs: 1
   active_learning: true
+
 
 loss:
   beta_concept: 1.0              # Weight for concept_loss in total loss
@@ -32,10 +33,10 @@ save:
   run_name_prefix: active_learning_crm
 
 data:
-  embeddings_path: './datasets/ultrafeedback/embeddings/meta-llama/Meta-Llama-3-8B/'
-  splits_path: './datasets/ultrafeedback/splits.csv'
-  concept_labels_path: './datasets/ultrafeedback/concept_labels/openbmb' 
-  preference_labels_path: './datasets/ultrafeedback/preference_labels/openbmb_average'
+  embeddings_path: './datasets/armo-rm/embeddings/FsfairX-LLaMA3-RM-v0.1/'
+  splits_path: './datasets/armo-rm/splits.csv'
+  concept_labels_path: './datasets/armo-rm/concept_labels/armo-rm' 
+  preference_labels_path: './datasets/armo-rm/preference_labels/armo-rm'
   batch_size: 32
  
 resolve_model_target:

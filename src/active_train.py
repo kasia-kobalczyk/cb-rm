@@ -27,16 +27,13 @@ def setup_trainer(cfg, save_dir=None):
     # Create datasets 
     train_dataset = instantiate(cfg.train_dataset)
     val_dataloader = instantiate(cfg.val_dataloader)
-    
     # Set output dimensions dynamically
     num_concepts = len(train_dataset.concept_names)
     cfg.model.model_builder.concept_encoder.output_dim = 2 * num_concepts if cfg.model.model_type == "probabilistic" else num_concepts
     cfg.model.model_builder.gating_network.output_dim = num_concepts
-    
     # Create model
     model = instantiate(cfg.model.model_builder, use_temperature=cfg.model.use_temperature, unmask_y=cfg.model.unmask_y)
     model.to(cfg.model.device)
-    
     # Create Trainer
     trainer = ActiveTrainer(
         cfg=cfg,
@@ -45,10 +42,9 @@ def setup_trainer(cfg, save_dir=None):
         val_dataloader=val_dataloader,
         save_dir=save_dir,
     )
-    
     return trainer
 
-@hydra.main(version_base=None, config_path=f"../configs", config_name="active_config_llm")
+@hydra.main(version_base=None, config_path=f"../configs", config_name="active_config_armo")
 def train(cfg: DictConfig):
 
     # Set random seed

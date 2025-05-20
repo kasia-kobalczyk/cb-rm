@@ -88,7 +88,10 @@ class PreferenceDataset(Dataset):
             'prompt': example['prompt'],
             'response': example['response'],
             'prompt_embedding': example['prompt_embedding'],
-            'prompt_response_embedding': example['prompt_response_embedding'],
+            'prompt_response_embedding': (
+            example['prompt_response_embedding']
+            if 'prompt_response_embedding' in example and example['prompt_response_embedding'] is not None
+            else example['embedding'])  # fallback key
         }
 
     def __len__(self):
@@ -102,10 +105,11 @@ class ExpandableConceptPreferenceDataset(PreferenceDataset):
             concept_labels_path,
             preference_labels_path,
             split='train',
+            random_init=True,
             num_initial_samples=0,
-            random_init=False,
             seed=42,
         ):
+
         super().__init__(
             embeddings_path=embeddings_path,
             splits_path=splits_path,
@@ -117,24 +121,34 @@ class ExpandableConceptPreferenceDataset(PreferenceDataset):
         self.rng = random.Random(seed)
         self.labelled_data = self.pairs_data.copy()
 
-        # Filter nan values in the relative_concept_labels column of the labelled pool, note: safeguarding, should not actually be used 
+        # Filter nan values in the relative_concept_labels column of the labelled pool,
         nan_filter = [np.isnan(x) if isinstance(x, float) else x is None for x in self.labelled_data['relative_concept_labels']]
         nan_index = self.labelled_data[nan_filter].index
         self.labelled_data.loc[nan_index, 'relative_concept_labels'] = None
         self.labelled_data.dropna(subset=['relative_concept_labels'], inplace=True)
 
-        self.pool_index = []
-        for i in self.labelled_data.index:
-            self.pool_index += [(i, k) for k in range(len(self.concept_names)) if self.labelled_data.loc[i, 'relative_concept_labels'][k] != -1.0]
-        self.pool_index = set(self.pool_index)
+        # self.pool_index = []
+        # for i in self.labelled_data.index:
+        #     labels = self.labelled_data.loc[i, 'relative_concept_labels']
+        #     self.pool_index += [(i, k) for k in range(len(self.concept_names)) if labels[k] != -1.0]
+        # self.pool_index = set(self.pool_index)
 
-        # Mask all concept labels
-        self.pairs_data['relative_concept_labels'] = list(np.ones(((len(self.pairs_data), len(self.concept_names)))) * -1.0)
-        
-        # Add initial samples
+
+        # Vectorized pool index, faster
+        # Convert the full column to a 2D array
+        labels_array = np.stack(self.labelled_data['relative_concept_labels'].values)
+        non_mask = labels_array != -1.0  # Boolean mask
+        # Get the row and column indices where values are not -1.0
+        row_idx, concept_idx = np.where(non_mask)
+        # Map row_idx (which is 0..N) back to actual DataFrame index
+        actual_indices = self.labelled_data.index.to_numpy()[row_idx]
+        self.pool_index = set(zip(actual_indices, concept_idx))
+        default_labels = np.full(len(self.concept_names), -1.0)
+        self.pairs_data['relative_concept_labels'] = [default_labels.copy() for _ in range(len(self.pairs_data))]
+
+
         if random_init:
             initial_samples = list(random.sample(list(self.pool_index), num_initial_samples))
-            self.initial_samples = initial_samples
         else:
             # Step 1: extract unique instance IDs from pool_index
             pool_instances = list({idx for (idx, _) in self.pool_index})
@@ -144,11 +158,9 @@ class ExpandableConceptPreferenceDataset(PreferenceDataset):
             selected_instances = random.sample(pool_instances, num_instances)
 
             # Step 3: for each instance, add all concepts [0-9]
-            initial_samples = [(idx, concept) for idx in selected_instances for concept in range(10)]
-
-            # Assign and build dataset
-            self.initial_samples = initial_samples
-
+            initial_samples = [(idx, concept) for idx in selected_instances for concept in range(len(self.concept_names))]
+        # Assign and build dataset
+        self.initial_samples = initial_samples
         self.build_dataset(initial_samples)
         
     def build_dataset(self, added_idx):

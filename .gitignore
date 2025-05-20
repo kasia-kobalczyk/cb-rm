@@ -182,3 +182,4 @@ outputs/
 saves/
 # for symlink
 datasets
+bin/
