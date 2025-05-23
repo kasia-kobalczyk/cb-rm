@@ -143,8 +143,15 @@ class ExpandableConceptPreferenceDataset(PreferenceDataset):
         # Map row_idx (which is 0..N) back to actual DataFrame index
         actual_indices = self.labelled_data.index.to_numpy()[row_idx]
         self.pool_index = set(zip(actual_indices, concept_idx))
+        # Only allow preference acquisition if label is available in ground truth
+        self.pool_instance_index = set(
+            self.labelled_data[
+                self.labelled_data['preference_label'].notnull()
+            ].index.tolist()
+        )
         default_labels = np.full(len(self.concept_names), -1.0)
         self.pairs_data['relative_concept_labels'] = [default_labels.copy() for _ in range(len(self.pairs_data))]
+        self.pairs_data['preference_label'] = [-1.0 for _ in range(len(self.pairs_data))]
 
 
         if random_init:
@@ -163,18 +170,25 @@ class ExpandableConceptPreferenceDataset(PreferenceDataset):
         self.initial_samples = initial_samples
         self.build_dataset(initial_samples)
         
-    def build_dataset(self, added_idx):
+    def build_dataset(self, concept_idx=None, preference_idx=None):
         """
         added_idx = [(instance_idx, conecpt_idx), ...]
         """
-        for idx in added_idx:
-            instance_idx, concept_idx = idx
-            current_concept_labels = self.pairs_data.loc[instance_idx, 'relative_concept_labels']
-            true_concept_labels = self.labelled_data.loc[instance_idx, 'relative_concept_labels']
-            updated_concept_labels = current_concept_labels.copy()
-            updated_concept_labels[concept_idx] = true_concept_labels[concept_idx]
-            self.pairs_data.at[instance_idx, 'relative_concept_labels'] = updated_concept_labels
-            self.pool_index.remove(idx)        
+        if concept_idx is not None:
+            for idx in concept_idx:
+                instance_idx, concept_idx = idx
+                current_concept_labels = self.pairs_data.loc[instance_idx, 'relative_concept_labels']
+                true_concept_labels = self.labelled_data.loc[instance_idx, 'relative_concept_labels']
+                updated_concept_labels = current_concept_labels.copy()
+                updated_concept_labels[concept_idx] = true_concept_labels[concept_idx]
+                self.pairs_data.at[instance_idx, 'relative_concept_labels'] = updated_concept_labels
+                self.pool_index.remove(idx)
+        if preference_idx is not None:
+            for instance_idx in preference_idx:
+                true_preference_label = self.labelled_data.loc[instance_idx, 'preference_label']
+                self.pairs_data.at[instance_idx, 'preference_label'] = true_preference_label
+                self.pool_instance_index.remove(instance_idx)
+       
         
 
 def collate_example(example):

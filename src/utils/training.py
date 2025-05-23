@@ -98,12 +98,14 @@ class RatioSampler(Sampler):
         self.current_indices = []
 
     def add_new(self, added_idx):
-         # Convert (idx, concept_idx) -> example_idx (row in dataset)
+        # Determine if it's (idx, concept_idx) or just idx
+        if isinstance(added_idx[0], tuple):  # Concept labels
+            added_rows = list({i for (i, _) in added_idx})
+        else:  # Preference labels
+            added_rows = list(added_idx)
 
-        added_rows = list({i for (i, _) in added_idx})
         old_rows = [i for i in self.current_indices if i not in added_rows]
 
-        # If buffer would overflow, sample a ratio of old rows
         if len(added_rows) + len(old_rows) > self.buffer_capacity:
             n_keep = int(self.buffer_capacity * self.buffer_ratio)
             kept_old = random.sample(old_rows, min(len(old_rows), n_keep))
@@ -125,9 +127,14 @@ class FIFOSampler(Sampler):
         self.current_indices = []
 
     def add_new(self, added_idx):
-        added_rows = list({i for (i, _) in added_idx})
+        if isinstance(added_idx[0], tuple):
+            added_rows = list({i for (i, _) in added_idx})
+        else:
+            added_rows = list(added_idx)
+
         self.current_indices = list(added_rows) + self.current_indices
         self.current_indices = self.current_indices[:self.buffer_capacity]
+
     
     def __iter__(self):
         shuffled = random.sample(self.current_indices, len(self.current_indices))
@@ -247,16 +254,19 @@ class ActiveTrainer:
             self.current_episode += 1
             print(f"Best eval metric afer episode {episode}: {best_eval_metric:.3f}")
             # Query new data
-            added_idx = self.query_new_data()
-            self.train_dataset.build_dataset(added_idx)
-            self.sampler.add_new(added_idx)
+            concept_idx, preference_idx = self.query_new_data()
+            self.train_dataset.build_dataset(concept_idx=concept_idx, preference_idx=preference_idx)
+            self.sampler.add_new(concept_idx)
+            # self.sampler.add_new(preference_idx)
+
+            
             self.train_dataloader = DataLoader(
                 self.train_dataset,
                 batch_size=self.cfg.data.batch_size,
                 sampler=self.sampler,
                 collate_fn=collate_fn,
             )
-            print(f"Added {len(added_idx)} concept labels to the training set")
+            print(f"Added {len(concept_idx)} concept labels to the training set")
             # Load the best model and optimizer: # TO DO: may instead train from scratch (?) # Doesnt work better
             # self.model = deepcopy(self.model_orig)
             # self.model.to(self.device)
@@ -568,22 +578,31 @@ class ActiveTrainer:
 
     def query_new_data(self):
         if self.cfg.model.model_type == "deterministic" and self.cfg.training.acquisition_function != "uniform":
-                print("Model is deterministic. Falling back to uniform acquisition.")
-                self.cfg.training.acquisition_function = "uniform"
+            print("Model is deterministic. Falling back to uniform acquisition.")
+            self.cfg.training.acquisition_function = "uniform"
 
-        if self.cfg.training.acquisition_function == "uniform":
-            added_idx = random.sample(
-            list(self.train_dataset.pool_index),
-            self.cfg.training.num_acquired_samples
+        metric = self.cfg.training.acquisition_function
+        num_concepts = len(self.train_dataset.concept_names)
+        concept_idx = []
+        preference_idx = []
+
+        # === UNIFORM ===
+        if metric == "uniform":
+            selected = random.sample(list(self.train_dataset.pool_index), self.cfg.training.num_acquired_samples)
+            instance_ids = list({i for i, _ in selected})
+            concept_idx = selected
+            preference_idx = instance_ids
+
+        # === UNIFORM_2 ===
+        elif metric == "uniform_2":
+            pool_instances = list({i for (i, _) in self.train_dataset.pool_index})
+            num_samples = min(
+                int(self.cfg.training.num_acquired_samples / num_concepts),
+                len(pool_instances),
             )
-        elif self.cfg.training.acquisition_function =="uniform_2":
-                # Get unique instance IDs from the pool
-            pool_instances = list({idx for (idx, _) in self.train_dataset.pool_index})
-
-            # Randomly sample instance IDs
-            num_samples = min(int(self.cfg.training.num_acquired_samples/len(self.train_dataset.concept_names)), len(pool_instances))
             selected_instances = random.sample(pool_instances, num_samples)
-            added_idx = [(idx, concept) for idx in selected_instances for concept in range(len(self.train_dataset.concept_names))]
+            concept_idx = [(i, k) for i in selected_instances for k in range(num_concepts)]
+            preference_idx = selected_instances
 
         elif self.cfg.training.acquisition_function in [
             "concept_variance", "concept_entropy", "sampling_eig", 
@@ -591,37 +610,39 @@ class ActiveTrainer:
         ]:
             metric = self.cfg.training.acquisition_function
             sorted_pairs = sorted(self.uncertainty_map[metric], key=lambda x: -x[1])
-            added_idx = [pair for (pair, _) in sorted_pairs if pair in self.train_dataset.pool_index][:self.cfg.training.num_acquired_samples]
+            concept_idx = [pair for (pair, _) in sorted_pairs if pair in self.train_dataset.pool_index][:self.cfg.training.num_acquired_samples]
+            preference_idx = list({i for (i, _) in concept_idx})
 
         elif self.cfg.training.acquisition_function == "concept_uncertainty":
             metric_uncertainty = [(x[0], 1 / (abs(x[-1] - 0.5) + 1e-6)) for x in self.uncertainty_map["concept_uncertainty"]]
             sorted_pairs = sorted(metric_uncertainty, key=lambda x: -x[1])
-            added_idx = [pair for (pair, _) in sorted_pairs if pair in self.train_dataset.pool_index][:self.cfg.training.num_acquired_samples]
+            concept_idx = [pair for (pair, _) in sorted_pairs if pair in self.train_dataset.pool_index][:self.cfg.training.num_acquired_samples]
+            preference_idx = list({i for (i, _) in concept_idx})
 
         elif self.cfg.training.acquisition_function == "concept_weight":
             sorted_pairs = sorted(self.uncertainty_map["concept_weight"], key=lambda x: abs(x[1]))  # absolute value if you want low magnitude
             added_idx = [pair for (pair, _) in sorted_pairs if pair in self.train_dataset.pool_index][:self.cfg.training.num_acquired_samples]
-        
+            preference_idx = list({i for (i, _) in concept_idx})
         elif self.cfg.training.acquisition_function == "certainty_concept_weight":
             contribution = [(self.uncertainty_map["variance"][i][0], self.uncertainty_map["variance"][i][-1] * abs(self.uncertainty_map["concept_weight"][i][-1])) for i in range(len(self.uncertainty_map["concept_uncertainty"]))]
             sorted_pairs = sorted(contribution, key=lambda x: -x[1]) 
-            added_idx = [pair for (pair, _) in sorted_pairs if pair in self.train_dataset.pool_index][:self.cfg.training.num_acquired_samples]
-
+            concept_idx = [pair for (pair, _) in sorted_pairs if pair in self.train_dataset.pool_index][:self.cfg.training.num_acquired_samples]
+            preference_idx = list({i for (i, _) in concept_idx})
         elif self.cfg.training.acquisition_function == "prob_concept_weight":
             contribution = [(self.uncertainty_map["concept_uncertainty"][i][0], self.uncertainty_map["concept_uncertainty"][i][-1] * abs(self.uncertainty_map["concept_weight"][i][-1])) for i in range(len(self.uncertainty_map["concept_uncertainty"]))]
             sorted_pairs = sorted(contribution, key=lambda x: -x[1])
-            added_idx = [pair for (pair, _) in sorted_pairs if pair in self.train_dataset.pool_index][:self.cfg.training.num_acquired_samples]
-        
+            concept_idx = [pair for (pair, _) in sorted_pairs if pair in self.train_dataset.pool_index][:self.cfg.training.num_acquired_samples]
+            preference_idx = list({i for (i, _) in concept_idx})
         elif self.cfg.training.acquisition_function == "label_uncertainty":
             label_uncertainty_metric = [(x[0], 1 / (abs(x[-1] - 0.5) + 1e-6)) for x in self.uncertainty_map["label_uncertainty"]]
             sorted_pairs = sorted(label_uncertainty_metric, key=lambda x: -x[1])
-            added_idx = [pair for (pair, _) in sorted_pairs if pair in self.train_dataset.pool_index][:self.cfg.training.num_acquired_samples]
-
+            concept_idx = [pair for (pair, _) in sorted_pairs if pair in self.train_dataset.pool_index][:self.cfg.training.num_acquired_samples]
+            preference_idx = list({i for (i, _) in concept_idx})
         elif self.cfg.training.acquisition_function == "label_entropy":
             label_uncertainty_metric = [(x[0], bernoulli_stats(x[-1])) for x in self.uncertainty_map["label_uncertainty"]]
             sorted_pairs = sorted(label_uncertainty_metric, key=lambda x: -x[1])
-            added_idx = [pair for (pair, _) in sorted_pairs if pair in self.train_dataset.pool_index][:self.cfg.training.num_acquired_samples]
-
+            concept_idx = [pair for (pair, _) in sorted_pairs if pair in self.train_dataset.pool_index][:self.cfg.training.num_acquired_samples]
+            preference_idx = list({i for (i, _) in concept_idx})
         elif self.cfg.training.acquisition_function == "variance_label_uncertainty":
             # Combine concept variance and label uncertainty
             label_uncertainty_scores = [(x[0], bernoulli_stats(x[-1])) for x in self.uncertainty_map["label_uncertainty"]]
@@ -634,13 +655,13 @@ class ActiveTrainer:
                 combined_scores.append(((idx, concept_idx), combined_score))
 
             combined_scores.sort(key=lambda x: -x[1])
-            added_idx = [idx for (idx, _) in combined_scores[:self.cfg.training.num_acquired_samples]]
-        
+            concept_idx = [idx for (idx, _) in combined_scores[:self.cfg.training.num_acquired_samples]]
+            preference_idx = list({i for (i, _) in concept_idx})
         else:
             raise NotImplementedError(
                 f"Acquisition function {self.cfg.training.acquisition_function} not implemented"
             )
-        return added_idx
+        return concept_idx, preference_idx
                 
 
     def eval(self, metrics, dataloader, max_steps, intervention_percentages=None):
