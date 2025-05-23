@@ -2,6 +2,7 @@ defaults:
   - _self_
   - model: probabilistic # Your existing model default
 
+
 training:
   num_epochs: 100
   lr: 1e-4
@@ -26,10 +27,10 @@ save:
   run_name_prefix: standard_training_crm
 
 data:
-  embeddings_path: './datasets/ultrafeedback/embeddings/meta-llama/Meta-Llama-3-8B/'
+  embeddings_path: './datasets/ultrafeedback/embeddings/meta-llama/Llama-2-7b-hf/'
   splits_path: './datasets/ultrafeedback/splits.csv'
-  concept_labels_path: './datasets/ultrafeedback/concept_labels/gpt4o-eus2-202407' 
-  preference_labels_path: './datasets/ultrafeedback/preference_labels/gpt4o-eus2-202407'
+  concept_labels_path: './datasets/ultrafeedback/concept_labels/openbmb' 
+  preference_labels_path: './datasets/ultrafeedback/preference_labels/openbmb_average'
   batch_size: 512
 
 resolve_model_target:

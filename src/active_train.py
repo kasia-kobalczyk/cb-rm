@@ -27,12 +27,22 @@ def setup_trainer(cfg, save_dir=None):
     # Create datasets 
     train_dataset = instantiate(cfg.train_dataset)
     val_dataloader = instantiate(cfg.val_dataloader)
+    if cfg.model.use_gating_network:
+        gating_cfg = OmegaConf.load("configs/gating_module/gating_network.yaml")
+    else:
+        gating_cfg = OmegaConf.load("configs/gating_module/linear_scalarization.yaml")
+    # Manually assign the correct module
+    cfg.model.model_builder.gating_network_or_scalarizer = gating_cfg
     # Set output dimensions dynamically
     num_concepts = len(train_dataset.concept_names)
     cfg.model.model_builder.concept_encoder.output_dim = 2 * num_concepts if cfg.model.model_type == "probabilistic" else num_concepts
-    cfg.model.model_builder.gating_network.output_dim = num_concepts
+    if cfg.model.use_gating_network:
+        cfg.model.model_builder.gating_network_or_scalarizer.output_dim = num_concepts
+    else:
+        cfg.model.model_builder.gating_network_or_scalarizer.input_dim = num_concepts 
+
     # Create model
-    model = instantiate(cfg.model.model_builder, use_temperature=cfg.model.use_temperature, unmask_y=cfg.model.unmask_y)
+    model = instantiate(cfg.model.model_builder, use_temperature=cfg.model.use_temperature, unmask_y=cfg.model.unmask_y, use_gating_network=cfg.model.use_gating_network)
     model.to(cfg.model.device)
     # Create Trainer
     trainer = ActiveTrainer(
@@ -44,7 +54,7 @@ def setup_trainer(cfg, save_dir=None):
     )
     return trainer
 
-@hydra.main(version_base=None, config_path=f"../configs", config_name="active_config_armo")
+@hydra.main(version_base=None, config_path=f"../configs", config_name="train_config")
 def train(cfg: DictConfig):
 
     # Set random seed

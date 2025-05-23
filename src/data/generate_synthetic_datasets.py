@@ -3,16 +3,17 @@ import numpy as np
 import pandas as pd
 from datasets import Dataset
 from sklearn.datasets import make_spd_matrix
+from tqdm import tqdm
 
 # Configuration
-N_PROMPTS = 500000
+N_PROMPTS = 50000 #500000
 RESPONSES_PER_PROMPT = 2
 P = 4096
 K = 10
 SEED = 42
 np.random.seed(SEED)
 
-SAVE_DIR = "./datasets/synthetic_cbm_data/"
+SAVE_DIR = "./datasets/synthetic_cbm_data_small/"
 os.makedirs(SAVE_DIR, exist_ok=True)
 concept_names = [f"concept_{i}" for i in range(K)]
 
@@ -40,7 +41,7 @@ records = []
 meta = []  # store per-response metadata
 idx_counter = 0
 
-for prompt_id in range(N_PROMPTS):
+for prompt_id in tqdm(range(N_PROMPTS), desc="Generating embeddings"):
     z = np.random.multivariate_normal(np.zeros(P), make_spd_matrix(P))
     prompt_emb = z @ W_proj_prompt
 
@@ -73,7 +74,7 @@ pair_rows = list()
 mechanisms = ["complete", "incomplete", "gated"]
 label_outputs = {m: {"concept_labels": [], "preference_labels": []} for m in mechanisms}
 
-for prompt_id in range(N_PROMPTS):
+for prompt_id in tqdm(range(N_PROMPTS), desc="Generating labels"):
     group = [m for m in meta if m["prompt_id"] == prompt_id]
     for i in range(len(group)):
         for j in range(i + 1, len(group)):

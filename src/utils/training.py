@@ -559,10 +559,10 @@ class ActiveTrainer:
         if 'kl_loss' in results:
             results['loss'] += self.cfg.loss.beta_kl * results['kl_loss']
 
-        if 'temperature' in results and self.cfg.model.use_temperature:
-            temp_loss = torch.mean((results['temperature'] - 1.0) ** 2)  # Regularize to T ~ 1
-            results['loss'] += self.cfg.loss.beta_temperature * temp_loss
-            results['temperature_loss'] = temp_loss 
+        # if 'temperature' in results and self.cfg.model.use_temperature:
+        #     temp_loss = torch.mean((results['temperature'] - 1.0) ** 2)  # Regularize to T ~ 1
+        #     results['loss'] += self.cfg.loss.beta_temperature * temp_loss
+        #     results['temperature_loss'] = temp_loss 
             
         return results
 
@@ -627,7 +627,7 @@ class ActiveTrainer:
             label_uncertainty_scores = [(x[0], bernoulli_stats(x[-1])) for x in self.uncertainty_map["label_uncertainty"]]
             combined_scores = []
             for (idx, concept_idx), var_score in self.uncertainty_map["concept_variance"]:
-                label_score = [v for (i, c), v in label_uncertainty_scores if i == idx and c == concept_idx][0]
+                label_score = [v for (i, c), v in label_uncertainty_scores if i == idx][0]
                 # Combine them (we can tune the balance between them with a lambda)
                 lambda_balance = getattr(self.cfg.training, "variance_label_lambda", 1.0)
                 combined_score = var_score + lambda_balance * label_score
@@ -693,7 +693,7 @@ class ActiveTrainer:
             if 'avg_concepts' in eval_results:
                 avg_concepts = eval_results['avg_concepts'][0,:] 
                 concepts = eval_results['lbl_concepts'][0,:]
-                weights = results['weights'][0,:].detach().cpu()
+                weights = results['weights'].detach().cpu() if results['weights'].dim() <2 else results['weights'][0].detach().cpu()
                 concept_names = getattr(self.train_dataset, "concept_names", [f"concept_{i}" for i in range(avg_concepts.shape[-1])])
                 wandb.log({f"concept_values/{name}": val for name, val in zip(concept_names, avg_concepts.numpy())})
                 wandb.log({f"concept_labes/{name}": val for name, val in zip(concept_names, concepts.numpy())})

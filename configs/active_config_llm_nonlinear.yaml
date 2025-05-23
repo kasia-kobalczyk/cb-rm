@@ -1,6 +1,6 @@
 defaults:
-  - model: probabilistic  # 'probabilistic'  or 'deterministic'
   - _self_
+  - model: probabilistic # Your existing model default
 
 training:
   num_epochs: 1
@@ -16,10 +16,10 @@ training:
   buffer_type: fifo
   buffer_capacity: 32000
   buffer_ratio: 0.8
-  training_mode: "joint"   # options: joint | sequential | pretrain_joint
-  cp_epochs: 100
-  j_epochs: 50
-  s_epochs: 50
+  training_mode: "sequential"   # options: joint | sequential | pretrain_joint
+  cp_epochs: 1
+  j_epochs: 1
+  s_epochs: 1
   active_learning: true
 
 

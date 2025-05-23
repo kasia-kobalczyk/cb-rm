@@ -1,0 +1,3 @@
+# conf/gating_module/linear_scalarization.yaml
+_target_: src.models.reward_models.LinearScalarization
+input_dim: ${model.concept_dim} # LinearScalarization takes concept_dim as input

@@ -1,6 +1,6 @@
 defaults:
-  - model: probabilistic  # 'probabilistic'  or 'deterministic'
   - _self_
+  - model: probabilistic # Your existing model default
 
 training:
   num_epochs: 1
