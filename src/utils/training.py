@@ -183,6 +183,10 @@ class ActiveTrainer:
             self.sampler = FIFOSampler(cfg.training.buffer_capacity)
         else:
             self.sampler = None
+    def get_beta(self, step, warmup_steps=10000, max_beta=1.0):
+        # Trying annealing
+        # return min(max_beta, step / warmup_steps)
+        return max_beta
     def run_interventions_on_batch(self, batch, relative_concept_logits, weights, concept_labels, intervention_percentages):
     
         intervention_results = {}
@@ -311,7 +315,7 @@ class ActiveTrainer:
                 #         break
                     self.model.train()
                     self.optimizer.zero_grad()
-                    results = self.run_batch(batch)
+                    results = self.run_batch(batch, it)
 
                     # Select loss
                     if mode == "concept_only":
@@ -325,6 +329,10 @@ class ActiveTrainer:
                 
                     loss.backward()
                     self.optimizer.step()
+                    for name, p in self.model.named_parameters():
+                        if p.grad is not None and torch.isnan(p.grad).any():
+                            print(f"🚨 NaN in gradient of {name}")
+
                     
                     if not self.cfg.training.dry_run:
                         wandb.log(
@@ -399,6 +407,7 @@ class ActiveTrainer:
             "sampling_eig": [],
             "eig": [],
             "eig_concepts": [],
+            "eig_concepts_unc":[],
             "CIS": [],
             "CIS_concepts": [],
             "etur": [],
@@ -435,7 +444,7 @@ class ActiveTrainer:
                         for k in range(relative_var.shape[1])
                     )
 
-                if self.cfg.training.acquisition_function in ["concept_uncertainty", "prob_concept_weight"]:
+                if self.cfg.training.acquisition_function in ["concept_uncertainty", "prob_concept_weight","eig_concepts_unc"]:
                     self.uncertainty_map["concept_uncertainty"].extend(
                         ((idx.item(), k), concept_uncertainty[b, k].item())
                         for b, idx in enumerate(idx_batch)
@@ -468,7 +477,7 @@ class ActiveTrainer:
                         for k in range(entropy.shape[1])
                     )
 
-                if self.cfg.training.acquisition_function in ["eig", "eig_concepts", "CIS", "CIS_concepts", "etur", "etur_concepts"]:
+                if self.cfg.training.acquisition_function in ["eig", "eig_concepts","eig_concepts_unc", "CIS", "CIS_concepts", "etur", "etur_concepts"]:
                     # Before intervention
                     p = torch.sigmoid(-reward_diff)
                     for k in range(batch['concept_labels'].shape[-1]):
@@ -492,6 +501,10 @@ class ActiveTrainer:
                             if self.cfg.training.acquisition_function == "eig_concepts":                            
                                 lambda_weight = getattr(self.cfg.training, "eig_uncertainty_lambda", 0.1)
                                 scores += lambda_weight * relative_var.squeeze()[:,k]
+                            elif self.cfg.training.acquisition_function == "eig_concepts_unc":
+                                lambda_weight = getattr(self.cfg.training, "eig_uncertainty_lambda", 0.1)
+                                c_unc = 1.0 / (torch.abs(concept_uncertainty - 0.5) + 1e-6)
+                                scores += lambda_weight * c_unc.squeeze()[:,k]
 
                         elif self.cfg.training.acquisition_function.startswith("etur"):
                             entropy_before = bernoulli_stats(p)
@@ -548,8 +561,7 @@ class ActiveTrainer:
 
         self.model.train()
 
-
-    def run_batch(self, batch):
+    def run_batch(self, batch, it=0):
         batch = batch_to_device(batch, self.device)
         results = self.model(batch)
         results['loss'] = results['preference_loss'] + self.cfg.loss.beta_concept * results['concept_loss'] 
@@ -557,7 +569,10 @@ class ActiveTrainer:
         # results['loss_c'] = self.cfg.loss.beta_concept * results['concept_loss'] 
         # results['loss_kl'] = self.cfg.loss.beta_kl * results['kl_loss']
         if 'kl_loss' in results:
-            results['loss'] += self.cfg.loss.beta_kl * results['kl_loss']
+            beta_kl = self.get_beta(it, max_beta=self.cfg.loss.beta_kl)
+            results['loss'] += beta_kl * results['kl_loss']
+            results['beta_kl'] = beta_kl  # optional: for wandb logging
+
 
         # if 'temperature' in results and self.cfg.model.use_temperature:
         #     temp_loss = torch.mean((results['temperature'] - 1.0) ** 2)  # Regularize to T ~ 1
@@ -587,7 +602,7 @@ class ActiveTrainer:
 
         elif self.cfg.training.acquisition_function in [
             "concept_variance", "concept_entropy", "sampling_eig", 
-            "eig", "eig_concepts", "CIS", "CIS_concepts", "etur", "etur_concepts"
+            "eig", "eig_concepts", "eig_concepts_unc", "CIS", "CIS_concepts", "etur", "etur_concepts"
         ]:
             metric = self.cfg.training.acquisition_function
             sorted_pairs = sorted(self.uncertainty_map[metric], key=lambda x: -x[1])

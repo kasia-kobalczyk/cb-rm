@@ -5,7 +5,7 @@ defaults:
 training:
   num_epochs: 100
   lr: 1e-4
-  eval_steps: 10
+  eval_steps: 1000
   max_num_eval_steps: 100
   seed: 42
   dry_run: False
@@ -21,7 +21,7 @@ loss:
   beta_kl: 0.001
 
 save:
-  project_name: active_learning_synth
+  project_name: May20
   wandb_entity: interp_rewards_RLHF
   run_name_prefix: standard_training_crm
 

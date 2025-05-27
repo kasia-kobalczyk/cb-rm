@@ -62,7 +62,7 @@ class BottleneckRewardModel(nn.Module):
                 # predictions = torch.round(preference_probs)
                 predictions = torch.round(preference_probs)*new_mask
                 accuracy = torch.mean((predictions == preference_labels.float()).float())
-            
+            # print("reward_diff stats:", preference_probs.min(), preference_probs.max(), preference_probs.mean())
         return preference_loss, accuracy
 
     def get_concept_loss(self, relative_concept_logits, concept_labels):
@@ -179,10 +179,22 @@ class ProbabilisticBottleneckRewardModel(BottleneckRewardModel):
 
         relative_mean = mean_a - mean_b
         relative_var = var_a + var_b
+        # print("relative_var:", relative_var.min(), relative_var.max(), relative_var.mean()) 
+        if torch.isnan(out_a).any() or torch.isnan(out_b).any():
+            print("❌ NaNs in input embeddings")
+            print("example_a embed stats:", out_a.min(), out_a.max(), out_a.mean())
+            print("example_b embed stats:", out_b.min(), out_b.max(), out_b.mean())
+        if torch.isnan(relative_mean).any():
+            print("⚠️ NaN detected in relative_mean!")
+            print("mean_a stats:", torch.min(mean_a), torch.max(mean_a), torch.isnan(mean_a).sum())
+            print("mean_b stats:", torch.min(mean_b), torch.max(mean_b), torch.isnan(mean_b).sum())
+            print("relative_mean:", relative_mean)
         if self.use_temperature:
+            relative_var = torch.clamp(relative_var, min=1e-6)
             relative_concept_logits = self.concept_sampler(relative_mean, relative_var)
             kl_loss = self.concept_sampler.kl_divergence(relative_mean, relative_var) #+  \
         else:
+            relative_var = torch.clamp(relative_var, min=1e-12)
             relative_concept_logits = self.concept_sampler(relative_mean, torch.sqrt(relative_var))
             kl_loss = self.concept_sampler.kl_divergence(relative_mean, torch.sqrt(relative_var)) #+  \
         # relative_concept_logits_a = self.concept_sampler(mean_a, var_a)
@@ -196,6 +208,7 @@ class ProbabilisticBottleneckRewardModel(BottleneckRewardModel):
         # reward_diff_a = torch.sum(weights * relative_concept_logits_a, dim=1)
         # reward_diff_b = torch.sum(weights * relative_concept_logits_b, dim=1)
         # reward_diff = reward_diff_a - reward_diff_b
+        # print(kl_loss)
         if self.use_gating_network:
             weights = self.gating_network_or_scalarizer(batch['example_a']['prompt_embedding'])
             reward_diff = torch.sum(weights * relative_concept_logits, dim=1)
@@ -247,6 +260,9 @@ class MLP(nn.Module):
 
     def forward(self, x):
         x = self.model(x)
+        if torch.isnan(x).any():
+            print(f"🔥 NaNs detected after layer in concept_encoder")
+            print(x)
         return x
 
 class GatingNetwork(nn.Module):

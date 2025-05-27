@@ -1,6 +1,6 @@
 device: cuda:0
 input_dim: 4096
-use_temperature: false 
+use_temperature: true 
 unmask_y: True
 use_gating_network: true
 

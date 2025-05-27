@@ -5,21 +5,21 @@ defaults:
 training:
   num_epochs: 1
   lr: 1e-4
-  eval_steps: 10
+  eval_steps: 1000
   max_num_eval_steps: 10
   seed: 42
   dry_run: False         # Set to true to skip wandb logging and saving
   num_episodes: 100
   acquisition_function: uniform
   num_acquired_samples: 320
-  num_initial_samples: 320
+  num_initial_samples: 1000
   buffer_type: fifo
-  buffer_capacity: 373140
+  buffer_capacity: 50000
   buffer_ratio: 0.8
-  training_mode: "sequential"   # options: joint | sequential | pretrain_joint
-  cp_epochs: 1
-  j_epochs: 1
-  s_epochs: 1
+  training_mode: "joint"   # options: joint | sequential | pretrain_joint
+  cp_epochs: 10
+  j_epochs: 20
+  s_epochs: 10
   active_learning: true
 
 
@@ -28,7 +28,7 @@ loss:
   beta_kl: 0.001
   beta_temperature: 0.001
 save:
-  project_name: active_learning
+  project_name: May20
   wandb_entity: interp_rewards_RLHF
   run_name_prefix: active_learning_crm
 
