@@ -30,7 +30,7 @@ loss:
   beta_temperature: 0.001
 
 save:
-  project_name: SimpleLLM
+  project_name: SimpleLLM_interv
   wandb_entity: interp_rewards_RLHF
   run_name_prefix: active_learning_crm
 

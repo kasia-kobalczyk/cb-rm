@@ -201,11 +201,11 @@ class ActiveTrainer:
             reward_diff = torch.sum(weights * intervened_logits, dim=1)
 
             # Recompute metrics
-            concept_loss, concept_pseudo_acc = self.model.get_concept_loss(
+            concept_loss, concept_pseudo_acc, concept_mask = self.model.get_concept_loss(
                         intervened_logits, concept_labels
                     )
             preference_loss, preference_acc = self.model.get_preference_loss(
-                reward_diff, batch['preference_labels']
+                reward_diff, batch['preference_labels'], concept_mask
             )
 
             intervention_results[intervention_ratio] = {
@@ -677,30 +677,30 @@ class ActiveTrainer:
                         eval_results['lbl_concepts'] = batch["concept_labels"].detach().cpu()
                 for k in metrics:
                     eval_results[k].append(results[k])
-                    # if intervention_percentages is not None:
-                    #     intervention_results = self.run_interventions_on_batch(
-                    #         batch,
-                    #         results["relative_concept_logits"],
-                    #         results["weights"],
-                    #         batch["concept_labels"],
-                    #         intervention_percentages,
-                    #     )
+                    if intervention_percentages is not None:
+                        intervention_results = self.run_interventions_on_batch(
+                            batch,
+                            results["relative_concept_logits"],
+                            results["weights"],
+                            batch["concept_labels"],
+                            intervention_percentages,
+                        )
 
-                    #     for intervention_ratio in intervention_percentages:
-                    #         mean_pref_acc = np.mean(intervention_results[intervention_ratio]['preference_accuracy'])
-                    #         mean_concept_acc = np.mean(intervention_results[intervention_ratio]['concept_pseudo_accuracy'])
+                        for intervention_ratio in intervention_percentages:
+                            mean_pref_acc = np.mean(intervention_results[intervention_ratio]['preference_accuracy'])
+                            mean_concept_acc = np.mean(intervention_results[intervention_ratio]['concept_pseudo_accuracy'])
 
-                    #         # Make keys
-                    #         pref_key = f"val_intervene_{int(intervention_ratio * 100)}_preference_accuracy"
-                    #         concept_key = f"val_intervene_{int(intervention_ratio * 100)}_concept_accuracy"
+                            # Make keys
+                            pref_key = f"val_intervene_{int(intervention_ratio * 100)}_preference_accuracy"
+                            concept_key = f"val_intervene_{int(intervention_ratio * 100)}_concept_accuracy"
 
-                    #         # If not existing yet, create list
-                    #         if pref_key not in eval_results:
-                    #             eval_results[pref_key] = []
-                    #             eval_results[concept_key] = []
+                            # If not existing yet, create list
+                            if pref_key not in eval_results:
+                                eval_results[pref_key] = []
+                                eval_results[concept_key] = []
 
-                    #         eval_results[pref_key].append(mean_pref_acc)
-                    #         eval_results[concept_key].append(mean_concept_acc)
+                            eval_results[pref_key].append(mean_pref_acc)
+                            eval_results[concept_key].append(mean_concept_acc)
                 it += 1
                 if it > max_steps:
                     break

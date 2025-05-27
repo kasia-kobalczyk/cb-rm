@@ -16,7 +16,7 @@ training:
   buffer_type: fifo
   buffer_capacity: 373140
   buffer_ratio: 0.8
-  training_mode: "sequential"   # options: joint | sequential | pretrain_joint
+  training_mode: "joint"   # options: joint | sequential | pretrain_joint
   cp_epochs: 1
   j_epochs: 1
   s_epochs: 1
