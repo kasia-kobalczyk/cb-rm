@@ -10,57 +10,6 @@ from torch.utils.data import Sampler
 from copy import deepcopy
 import torch.nn.functional as F
 
-# def compute_grad_norm(module):
-#     with torch.no_grad():
-#         total_norm = 0.0
-#         for p in module.parameters():
-#             if p.grad is not None:
-#                 if torch.isnan(p.grad).any() or torch.isinf(p.grad).any():
-#                     print("WARNING: Gradient has NaN or Inf!", p)
-#                 else:
-#                     param_norm = p.grad.data.norm(2)
-#                     total_norm += param_norm.item() ** 2
-
-#                 # param_norm = p.grad.data.norm(2)
-#                 # total_norm += param_norm.item() ** 2
-#     return total_norm ** 0.5
-def intervene_logits_with_ground_truth(relative_concept_logits, concept_labels, intervention_ratio):
-    """
-    Partially intervenes on relative_concept_logits using ground truth concept_labels.
-    Only a ratio of the valid concepts are intervened (replaced with -logit(label)).
-    """
-    intervened_logits = relative_concept_logits.clone()
-
-    # Get valid mask (concept labels >= 0 are valid for intervention)
-    valid_mask = concept_labels >= 0.0
-
-    # Total number of valid concepts per batch item
-    total_valid = valid_mask.sum(dim=1)
-
-    # How many concepts to intervene per item
-    num_to_intervene = (total_valid.float() * intervention_ratio).ceil().long()
-
-    for b in range(relative_concept_logits.size(0)):
-        valid_indices = valid_mask[b].nonzero(as_tuple=False).squeeze(-1)
-
-        if len(valid_indices) == 0:
-            continue
-
-        # Randomly select indices to intervene
-        n_intervene = min(len(valid_indices), num_to_intervene[b].item())
-
-        selected_indices = valid_indices[torch.randperm(len(valid_indices))[:n_intervene]]
-
-        # Compute ground truth logits from concept_labels
-        gt_logits = -torch.logit(concept_labels[b][selected_indices].clamp(1e-6, 1 - 1e-6))
-        gt_logits = gt_logits.to(intervened_logits.dtype)  # <<< this fixes it
-
-
-        # Overwrite selected logits
-        intervened_logits[b][selected_indices] = gt_logits
-
-    return intervened_logits
-
 def to_tensor(x, device):
     return torch.tensor(x, dtype=torch.float32).unsqueeze(0).to(device)
 
@@ -80,44 +29,11 @@ def bernoulli_stats(p, q=None):
 
 
 def intervene_logits(relative_concept_logits, concept_idx, weights, intervene_value):
-# def intervene_logits(relative_concept_logits, concept_idx, model_scal, intervene_value):
     intervened_logits = relative_concept_logits.clone()
     intervened_logits[:, concept_idx] = intervene_value
     reward = torch.sum(weights * intervened_logits, dim=1)
-    # reward = model_scal(intervened_logits)
-    
     return reward, intervened_logits
 
-class RatioSampler(Sampler):
-    def __init__(self, dataset,buffer_capacity =32000 , buffer_ratio=0.2):
-        self.dataset = dataset
-        self.buffer_capacity = buffer_capacity
-        self.buffer_ratio = buffer_ratio
-
-        # Collect all indices
-        self.current_indices = []
-
-    def add_new(self, added_idx):
-         # Convert (idx, concept_idx) -> example_idx (row in dataset)
-
-        added_rows = list({i for (i, _) in added_idx})
-        old_rows = [i for i in self.current_indices if i not in added_rows]
-
-        # If buffer would overflow, sample a ratio of old rows
-        if len(added_rows) + len(old_rows) > self.buffer_capacity:
-            n_keep = int(self.buffer_capacity * self.buffer_ratio)
-            kept_old = random.sample(old_rows, min(len(old_rows), n_keep))
-        else:
-            kept_old = old_rows
-
-        self.current_indices = added_rows + kept_old
-        random.shuffle(self.current_indices)
-
-    def __iter__(self):
-        return iter(self.current_indices)
-
-    def __len__(self):
-        return len(self.current_indices)
     
 class FIFOSampler(Sampler):
     def __init__(self, buffer_capacity):
@@ -153,11 +69,8 @@ class ActiveTrainer:
         self.val_dataloader = val_dataloader
         self.num_epochs = cfg.training.num_epochs
         self.model = model       
-        # self.model_orig = deepcopy(model)
 
         self.model.to(self.device)
-        # for param in self.model.concept_encoder.parameters():
-        #     param.requires_grad = False
         self.optimizer = torch.optim.Adam(
             self.model.parameters(), lr=cfg.training.lr, eps=3e-5
         )
@@ -177,62 +90,13 @@ class ActiveTrainer:
         self.eval_metrics = [
             'preference_accuracy', 'concept_pseudo_accuracy'
         ]
-        if self.cfg.training.get("buffer_type", None) == 'ratio':
-            self.sampler = RatioSampler(self.train_dataset, cfg.training.buffer_capacity, cfg.training.buffer_ratio)
-        elif self.cfg.training.get("buffer_type", None) == 'fifo':
-            self.sampler = FIFOSampler(cfg.training.buffer_capacity)
-        else:
-            self.sampler = None
-    def get_beta(self, step, warmup_steps=10000, max_beta=1.0):
-        # Trying annealing
-        # return min(max_beta, step / warmup_steps)
-        return max_beta
-    def run_interventions_on_batch(self, batch, relative_concept_logits, weights, concept_labels, intervention_percentages):
-    
-        intervention_results = {}
-
-        for intervention_ratio in intervention_percentages:
-            # Apply intervention
-            intervened_logits = intervene_logits_with_ground_truth(
-                relative_concept_logits, concept_labels, intervention_ratio
-            )
-
-            # Recompute reward_diff
-            reward_diff = torch.sum(weights * intervened_logits, dim=1)
-
-            # Recompute metrics
-            concept_loss, concept_pseudo_acc, concept_mask = self.model.get_concept_loss(
-                        intervened_logits, concept_labels
-                    )
-            preference_loss, preference_acc = self.model.get_preference_loss(
-                reward_diff, batch['preference_labels'], concept_mask
-            )
-
-            intervention_results[intervention_ratio] = {
-                'preference_accuracy': preference_acc.item(),
-                'concept_pseudo_accuracy': concept_pseudo_acc.item()
-            }
-            if not self.cfg.training.dry_run:
-                wandb.log({
-                    f"intervene_{int(intervention_ratio * 100)}_preference_accuracy": preference_acc.item(),
-                    f"intervene_{int(intervention_ratio * 100)}_concept_accuracy": concept_pseudo_acc.item()
-                })
-
-        return intervention_results
+        self.sampler = FIFOSampler(cfg.training.buffer_capacity)
     
     def train_loop(self):
 
-        # subset_size = self.cfg.training.subset_size  # or however many you want
-        # indices = list(range(subset_size))
-
-        # Wrap the dataset into a subset
-        # subset_train_dataset = Subset(self.train_dataset, indices)
-
         if self.sampler is not None: self.sampler.add_new(self.train_dataset.initial_samples)
-        # g = torch.Generator()
-        # g.manual_seed(42)
         self.train_dataloader = DataLoader(
-            self.train_dataset, # subset_train_dataset
+            self.train_dataset,
             batch_size=self.cfg.data.batch_size,
             shuffle=(self.sampler is None),
             sampler=self.sampler,
@@ -261,14 +125,6 @@ class ActiveTrainer:
                 collate_fn=collate_fn,
             )
             print(f"Added {len(added_idx)} concept labels to the training set")
-            # Load the best model and optimizer: # TO DO: may instead train from scratch (?) # Doesnt work better
-            # self.model = deepcopy(self.model_orig)
-            # self.model.to(self.device)
-            # self.optimizer = torch.optim.Adam(
-            #     self.model.parameters(), lr=self.cfg.training.lr, eps=3e-5
-            # )
-
-            
             self.model.load_state_dict(torch.load(f"{self.save_dir}/model_best.pt"))
             self.optimizer.load_state_dict(torch.load(f"{self.save_dir}/optim_best.pt"))
 
@@ -277,18 +133,6 @@ class ActiveTrainer:
 
         if self.cfg.training.training_mode == "joint":
             phases = [("joint", self.cfg.training.j_epochs)]
-    
-        elif self.cfg.training.training_mode == "pretrain_joint":
-            phases = [
-                ("concept_only", self.cfg.training.cp_epochs),
-                ("joint", self.cfg.training.j_epochs),
-            ]
-
-        elif self.cfg.training.training_mode == "sequential":
-            phases = [
-                ("concept_only", self.cfg.training.cp_epochs),
-                ("preference_only", self.cfg.training.j_epochs),
-            ]
 
         else:
             raise ValueError("Invalid training mode")
@@ -309,10 +153,6 @@ class ActiveTrainer:
             for epoch in range(epochs):
                 print(f"Epoch {epoch + 1}/{epochs} [{mode}]")
                 for batch in tqdm(self.train_dataloader):
-                # Temporary in place for debugging dont delete TODO: remove at the end
-                # for i, batch in enumerate(tqdm(self.train_dataloader)):
-                #     if i >= 2:
-                #         break
                     self.model.train()
                     self.optimizer.zero_grad()
                     results = self.run_batch(batch, it)
@@ -329,11 +169,7 @@ class ActiveTrainer:
                 
                     loss.backward()
                     self.optimizer.step()
-                    for name, p in self.model.named_parameters():
-                        if p.grad is not None and torch.isnan(p.grad).any():
-                            print(f"🚨 NaN in gradient of {name}")
 
-                    
                     if not self.cfg.training.dry_run:
                         wandb.log(
                             {'train_' + k: results[k] for k in self.training_metrics},
@@ -344,11 +180,6 @@ class ActiveTrainer:
                             wandb.log(
                                 {'val_' + k: val_results[k] for k in self.eval_metrics},
                             )
-                            # with torch.no_grad():
-                            #     scalar_weights = F.softmax(self.model.scalarizer.logits.detach(), dim=0).cpu().numpy()
-                            #     # scalar_weights = self.model.scalarizer.linear.weight.detach().cpu().numpy().flatten()
-                            #     concept_names = self.train_dataset.concept_names
-                            #     wandb.log({f"scalar_weights/{name}": w for name, w in zip(concept_names, scalar_weights)})
                             eval_metric_value = val_results[eval_stopping_metric]
                             if 'accuracy' in eval_stopping_metric:
                                 eval_metric_value = -eval_metric_value
@@ -392,7 +223,7 @@ class ActiveTrainer:
             self.best_eval_metric = best_eval_metric
 
             # Save the uncertainty map
-            if self.cfg.model.model_type == "probabilistic" and self.cfg.training.get("acquisition_function", None) not in ["uniform", "uniform_2", None]:
+            if self.cfg.model.model_type == "probabilistic" and self.cfg.training.get("acquisition_function", None) not in ["uniform", None]:
                 self.compute_uncertainty_map()
 
         return best_eval_metric
@@ -400,18 +231,8 @@ class ActiveTrainer:
     def compute_uncertainty_map(self):
         self.uncertainty_map = {
             "concept_variance": [],
-            "concept_uncertainty": [],
-            "concept_weight": [],
-            "label_uncertainty": [],
-            "concept_entropy": [],
-            "sampling_eig": [],
             "eig": [],
-            "eig_concepts": [],
-            "eig_concepts_unc":[],
-            "CIS": [],
             "CIS_concepts": [],
-            "etur": [],
-            "etur_concepts": [],
         }
         self.model.eval()
         with torch.no_grad():
@@ -437,57 +258,22 @@ class ActiveTrainer:
                 label_uncertainty = torch.sigmoid(-reward_diff)
 
                 # Now fill the uncertainty_map dictionary
-                if self.cfg.training.acquisition_function in ["concept_variance", "certainty_concept_weight", "variance_label_uncertainty"]:
+                if self.cfg.training.acquisition_function in ["concept_variance"]:
                     self.uncertainty_map["concept_variance"].extend(
                         ((idx.item(), k), relative_var[b, k].item())
                         for b, idx in enumerate(idx_batch)
                         for k in range(relative_var.shape[1])
                     )
 
-                if self.cfg.training.acquisition_function in ["concept_uncertainty", "prob_concept_weight","eig_concepts_unc"]:
-                    self.uncertainty_map["concept_uncertainty"].extend(
-                        ((idx.item(), k), concept_uncertainty[b, k].item())
-                        for b, idx in enumerate(idx_batch)
-                        for k in range(concept_uncertainty.shape[1])
-                    )
-
-                if self.cfg.training.acquisition_function in ["concept_weight", "certainty_concept_weight", "prob_concept_weight"]:
-                    self.uncertainty_map["concept_weight"].extend(
-                        ((idx.item(), k), weights[b, k].item())
-                        for b, idx in enumerate(idx_batch)
-                        for k in range(weights.shape[1])
-                    )
-
-                if self.cfg.training.acquisition_function in ["label_uncertainty", "variance_label_uncertainty", "label_entropy"]:
-                    self.uncertainty_map["label_uncertainty"].extend(
-                        ((idx.item(), -1), label_uncertainty[b].item())
-                        for b, idx in enumerate(idx_batch)
-                    )
-
-                if self.cfg.training.acquisition_function == "concept_entropy":
-                    sampler = self.model.concept_sampler
-                    relative_samples = sampler(relative_mean, relative_var, n_samples=16) # [16, batch_size, num_concepts]
-                    bs, num_concepts = relative_samples.shape[1], relative_samples.shape[2]
-                    relative_samples = relative_samples.reshape(16, -1)
-                    entropy = -torch.mean(torch.log(torch.sigmoid(relative_samples) * (1 - torch.sigmoid(relative_samples))), dim=0)
-                    entropy = entropy.reshape(bs, num_concepts)
-                    self.uncertainty_map["concept_entropy"].extend(
-                        ((idx.item(), k), entropy[b, k].item())
-                        for b, idx in enumerate(idx_batch)
-                        for k in range(entropy.shape[1])
-                    )
-
-                if self.cfg.training.acquisition_function in ["eig", "eig_concepts","eig_concepts_unc", "CIS", "CIS_concepts", "etur", "etur_concepts"]:
+                if self.cfg.training.acquisition_function in ["eig", "CIS_concepts"]:
                     # Before intervention
                     p = torch.sigmoid(-reward_diff)
                     for k in range(batch['concept_labels'].shape[-1]):
                         # Intervene 0
                         reward_0, _ = intervene_logits(relative_concept_logits, k, weights, 10.0)
-                        # reward_0, _ = intervene_logits(relative_concept_logits, k, self.model.scalarizer, 10.0)
                         q0 = torch.sigmoid(-reward_0)
                         # Intervene 1
                         reward_1, _ = intervene_logits(relative_concept_logits, k, weights, -10.0)
-                        # reward_1, _ = intervene_logits(relative_concept_logits, k,  self.model.scalarizer, -10.0)
                         q1 = torch.sigmoid(-reward_1)
                         
                         concept_logit = relative_concept_logits[0, k]
@@ -497,65 +283,16 @@ class ActiveTrainer:
                             kl_0 = bernoulli_stats(p, q0)
                             kl_1 = bernoulli_stats(p, q1)
                             scores = (concept_prob * kl_1 + (1 - concept_prob) * kl_0)
-   
-                            if self.cfg.training.acquisition_function == "eig_concepts":                            
-                                lambda_weight = getattr(self.cfg.training, "eig_uncertainty_lambda", 0.1)
-                                scores += lambda_weight * relative_var.squeeze()[:,k]
-                            elif self.cfg.training.acquisition_function == "eig_concepts_unc":
-                                lambda_weight = getattr(self.cfg.training, "eig_uncertainty_lambda", 0.1)
-                                c_unc = 1.0 / (torch.abs(concept_uncertainty - 0.5) + 1e-6)
-                                scores += lambda_weight * c_unc.squeeze()[:,k]
 
-                        elif self.cfg.training.acquisition_function.startswith("etur"):
-                            entropy_before = bernoulli_stats(p)
-                            entropy_0 = bernoulli_stats(q0)
-                            entropy_1 = bernoulli_stats(q1)
-                            expected_entropy_after = concept_prob * entropy_1 + (1 - concept_prob) * entropy_0
-                            scores = (entropy_before - expected_entropy_after)
-                            if self.cfg.training.acquisition_function == "etur_concepts":                            
-                                lambda_weight = getattr(self.cfg.training, "etur_uncertainty_lambda", 0.1)
-                                scores += lambda_weight * relative_var.squeeze()[:,k]
 
-                        elif self.cfg.training.acquisition_function.startswith("CIS"):
+                        elif self.cfg.training.acquisition_function.startswith("CIS_concepts"):
                             expected_p = (1 - concept_prob) * q0 + concept_prob * q1
                             scores = torch.abs((expected_p - p))
-
-                            if self.cfg.training.acquisition_function == "CIS_concepts":
-                                lambda_weight = getattr(self.cfg.training, "CIS_uncertainty_lambda", 0.1)
-                                scores += lambda_weight * relative_var.squeeze()[:,k]
+                            lambda_weight = getattr(self.cfg.training, "CIS_uncertainty_lambda", 0.1)
+                            scores += lambda_weight * relative_var.squeeze()[:,k]
                         
                         self.uncertainty_map[self.cfg.training.acquisition_function].extend(
                             ((idx.item(), k), scores[b].item())
-                            for b, idx in enumerate(idx_batch)
-                        )
-
-                if self.cfg.training.acquisition_function == "sampling_eig":
-                    sampler = self.model.concept_sampler    
-                    n_samples = 16
-                    outer_samples = sampler(relative_mean, relative_var, n_samples=n_samples) # [n_samples, batch_size, num_concepts]
-                    inner_samples = sampler(relative_mean, relative_var, n_samples=n_samples) # [n_samples, batch_size, num_concepts]
-                    concept_labels = batch['concept_labels'].cpu()
-                    concept_labels = concept_labels.repeat(n_samples, 1, 1) # [16, batch_size, num_concepts]
-
-                    unobserved = concept_labels == -1
-                    s = torch.where(
-                        unobserved,
-                        inner_samples,
-                        concept_labels
-                    )
-                    r_diff_lCso = torch.sum(weights * s, dim=-1)
-                    p_y_lCso = torch.sigmoid(r_diff_lCso).mean(dim=0)
-    
-                    for k in range(concept_labels.shape[-1]):                    
-                        s = s.repeat(n_samples, 1, 1, 1) # [n_samples, n_samples, batch_size, num_concepts]
-                        s[:, :, :, k] = outer_samples[:, :, k] # intervene on the k-th concept
-                        r_diff_lCsosk = torch.sum(weights * s, dim=-1)
-                        p_y_lCsosk = torch.sigmoid(r_diff_lCsosk).mean(dim=1) # [n_samples, batch_size]
-                        p_y_lCso = p_y_lCso.repeat(n_samples, 1)
-                        eig = p_y_lCso * torch.log(p_y_lCso / p_y_lCsosk) + (1 - p_y_lCso) * torch.log((1 - p_y_lCso) / (1 - p_y_lCsosk))
-                        eig = eig.mean(dim=0) # [batch_size]
-                        self.uncertainty_map["sampling_eig"].extend(
-                            ((idx.item(), k), eig[b].item())
                             for b, idx in enumerate(idx_batch)
                         )
 
@@ -565,19 +302,10 @@ class ActiveTrainer:
         batch = batch_to_device(batch, self.device)
         results = self.model(batch)
         results['loss'] = results['preference_loss'] + self.cfg.loss.beta_concept * results['concept_loss'] 
-        # results['loss_t'] = results['preference_loss'] 
-        # results['loss_c'] = self.cfg.loss.beta_concept * results['concept_loss'] 
-        # results['loss_kl'] = self.cfg.loss.beta_kl * results['kl_loss']
         if 'kl_loss' in results:
-            beta_kl = self.get_beta(it, max_beta=self.cfg.loss.beta_kl)
+            beta_kl = self.cfg.loss.beta_kl
             results['loss'] += beta_kl * results['kl_loss']
             results['beta_kl'] = beta_kl  # optional: for wandb logging
-
-
-        # if 'temperature' in results and self.cfg.model.use_temperature:
-        #     temp_loss = torch.mean((results['temperature'] - 1.0) ** 2)  # Regularize to T ~ 1
-        #     results['loss'] += self.cfg.loss.beta_temperature * temp_loss
-        #     results['temperature_loss'] = temp_loss 
             
         return results
 
@@ -591,66 +319,13 @@ class ActiveTrainer:
             list(self.train_dataset.pool_index),
             self.cfg.training.num_acquired_samples
             )
-        elif self.cfg.training.acquisition_function =="uniform_2":
-                # Get unique instance IDs from the pool
-            pool_instances = list({idx for (idx, _) in self.train_dataset.pool_index})
-
-            # Randomly sample instance IDs
-            num_samples = min(int(self.cfg.training.num_acquired_samples/len(self.train_dataset.concept_names)), len(pool_instances))
-            selected_instances = random.sample(pool_instances, num_samples)
-            added_idx = [(idx, concept) for idx in selected_instances for concept in range(len(self.train_dataset.concept_names))]
-
         elif self.cfg.training.acquisition_function in [
-            "concept_variance", "concept_entropy", "sampling_eig", 
-            "eig", "eig_concepts", "eig_concepts_unc", "CIS", "CIS_concepts", "etur", "etur_concepts"
+            "concept_variance", "eig", "CIS_concepts"
         ]:
             metric = self.cfg.training.acquisition_function
             sorted_pairs = sorted(self.uncertainty_map[metric], key=lambda x: -x[1])
             added_idx = [pair for (pair, _) in sorted_pairs if pair in self.train_dataset.pool_index][:self.cfg.training.num_acquired_samples]
 
-        elif self.cfg.training.acquisition_function == "concept_uncertainty":
-            metric_uncertainty = [(x[0], 1 / (abs(x[-1] - 0.5) + 1e-6)) for x in self.uncertainty_map["concept_uncertainty"]]
-            sorted_pairs = sorted(metric_uncertainty, key=lambda x: -x[1])
-            added_idx = [pair for (pair, _) in sorted_pairs if pair in self.train_dataset.pool_index][:self.cfg.training.num_acquired_samples]
-
-        elif self.cfg.training.acquisition_function == "concept_weight":
-            sorted_pairs = sorted(self.uncertainty_map["concept_weight"], key=lambda x: abs(x[1]))  # absolute value if you want low magnitude
-            added_idx = [pair for (pair, _) in sorted_pairs if pair in self.train_dataset.pool_index][:self.cfg.training.num_acquired_samples]
-        
-        elif self.cfg.training.acquisition_function == "certainty_concept_weight":
-            contribution = [(self.uncertainty_map["variance"][i][0], self.uncertainty_map["variance"][i][-1] * abs(self.uncertainty_map["concept_weight"][i][-1])) for i in range(len(self.uncertainty_map["concept_uncertainty"]))]
-            sorted_pairs = sorted(contribution, key=lambda x: -x[1]) 
-            added_idx = [pair for (pair, _) in sorted_pairs if pair in self.train_dataset.pool_index][:self.cfg.training.num_acquired_samples]
-
-        elif self.cfg.training.acquisition_function == "prob_concept_weight":
-            contribution = [(self.uncertainty_map["concept_uncertainty"][i][0], self.uncertainty_map["concept_uncertainty"][i][-1] * abs(self.uncertainty_map["concept_weight"][i][-1])) for i in range(len(self.uncertainty_map["concept_uncertainty"]))]
-            sorted_pairs = sorted(contribution, key=lambda x: -x[1])
-            added_idx = [pair for (pair, _) in sorted_pairs if pair in self.train_dataset.pool_index][:self.cfg.training.num_acquired_samples]
-        
-        elif self.cfg.training.acquisition_function == "label_uncertainty":
-            label_uncertainty_metric = [(x[0], 1 / (abs(x[-1] - 0.5) + 1e-6)) for x in self.uncertainty_map["label_uncertainty"]]
-            sorted_pairs = sorted(label_uncertainty_metric, key=lambda x: -x[1])
-            added_idx = [pair for (pair, _) in sorted_pairs if pair in self.train_dataset.pool_index][:self.cfg.training.num_acquired_samples]
-
-        elif self.cfg.training.acquisition_function == "label_entropy":
-            label_uncertainty_metric = [(x[0], bernoulli_stats(x[-1])) for x in self.uncertainty_map["label_uncertainty"]]
-            sorted_pairs = sorted(label_uncertainty_metric, key=lambda x: -x[1])
-            added_idx = [pair for (pair, _) in sorted_pairs if pair in self.train_dataset.pool_index][:self.cfg.training.num_acquired_samples]
-
-        elif self.cfg.training.acquisition_function == "variance_label_uncertainty":
-            # Combine concept variance and label uncertainty
-            label_uncertainty_scores = [(x[0], bernoulli_stats(x[-1])) for x in self.uncertainty_map["label_uncertainty"]]
-            combined_scores = []
-            for (idx, concept_idx), var_score in self.uncertainty_map["concept_variance"]:
-                label_score = [v for (i, c), v in label_uncertainty_scores if i == idx][0]
-                # Combine them (we can tune the balance between them with a lambda)
-                lambda_balance = getattr(self.cfg.training, "variance_label_lambda", 1.0)
-                combined_score = var_score + lambda_balance * label_score
-                combined_scores.append(((idx, concept_idx), combined_score))
-
-            combined_scores.sort(key=lambda x: -x[1])
-            added_idx = [idx for (idx, _) in combined_scores[:self.cfg.training.num_acquired_samples]]
-        
         else:
             raise NotImplementedError(
                 f"Acquisition function {self.cfg.training.acquisition_function} not implemented"
@@ -677,30 +352,6 @@ class ActiveTrainer:
                         eval_results['lbl_concepts'] = batch["concept_labels"].detach().cpu()
                 for k in metrics:
                     eval_results[k].append(results[k])
-                    if intervention_percentages is not None:
-                        intervention_results = self.run_interventions_on_batch(
-                            batch,
-                            results["relative_concept_logits"],
-                            results["weights"],
-                            batch["concept_labels"],
-                            intervention_percentages,
-                        )
-
-                        for intervention_ratio in intervention_percentages:
-                            mean_pref_acc = np.mean(intervention_results[intervention_ratio]['preference_accuracy'])
-                            mean_concept_acc = np.mean(intervention_results[intervention_ratio]['concept_pseudo_accuracy'])
-
-                            # Make keys
-                            pref_key = f"val_intervene_{int(intervention_ratio * 100)}_preference_accuracy"
-                            concept_key = f"val_intervene_{int(intervention_ratio * 100)}_concept_accuracy"
-
-                            # If not existing yet, create list
-                            if pref_key not in eval_results:
-                                eval_results[pref_key] = []
-                                eval_results[concept_key] = []
-
-                            eval_results[pref_key].append(mean_pref_acc)
-                            eval_results[concept_key].append(mean_concept_acc)
                 it += 1
                 if it > max_steps:
                     break

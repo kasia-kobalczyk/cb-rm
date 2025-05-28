@@ -4,66 +4,29 @@ import numpy as np
 from torch.distributions.relaxed_bernoulli import RelaxedBernoulli
 import torch.nn.functional as F
 
-class TemperatureNetwork(nn.Module):
-    def __init__(self, input_dim, hidden_dim=128):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, 1)
-        )
-        
-    def forward(self, x):
-        temp = self.net(x) 
-        temp = torch.nn.functional.softplus(temp) + 1e-3  # ensure positivity
-        return temp.squeeze(-1) 
-
 class BottleneckRewardModel(nn.Module):
     def __init__(
             self, 
             concept_encoder,
             gating_network_or_scalarizer,
-            use_temperature=False,
-            unmask_y=True,
-            use_gating_network=True
         ):
         super(BottleneckRewardModel, self).__init__()
         self.concept_encoder = concept_encoder
         self.gating_network_or_scalarizer = gating_network_or_scalarizer
-        self.unmask_y = unmask_y
-        self.use_gating_network = use_gating_network
     
     def get_preference_loss(self, reward_diff, preference_labels, concept_mask):
         if torch.sum(concept_mask) == 0:
             preference_loss = torch.zeros(1).to(preference_labels.device)
             accuracy = np.nan 
         else:
-            if self.unmask_y:
-                preference_probs = torch.sigmoid(-reward_diff).unsqueeze(1) # Negative since labels are flipped reward_a > reward_b -> label = 0.0
-                preference_loss = torch.nn.functional.binary_cross_entropy(
-                    preference_probs.float(), preference_labels.float(), reduction='none'
-                )
-                preference_loss = torch.mean(preference_loss)
-                predictions = torch.round(preference_probs)
-                accuracy = torch.mean((predictions == preference_labels.float()).float())
-            else:
-                preference_probs = torch.sigmoid(-reward_diff).unsqueeze(1) # Negative since labels are flipped reward_a > reward_b -> label = 0.0
-                row_has_zero = (concept_mask != 1).any(dim=1, keepdim=True)
-                new_mask = (~row_has_zero).float()
-
-                preference_probs = preference_probs*new_mask
-                preference_labels = preference_labels*new_mask
-                preference_loss = torch.nn.functional.binary_cross_entropy(
-                    preference_probs.float(), preference_labels.float(), reduction='none'
-                )
-                # preference_loss = torch.mean(preference_loss)
-                preference_loss = torch.sum(preference_loss) / torch.sum(new_mask)
-                # accuracy
-                # predictions = torch.round(preference_probs)
-                predictions = torch.round(preference_probs)*new_mask
-                accuracy = torch.mean((predictions == preference_labels.float()).float())
-            # print("reward_diff stats:", preference_probs.min(), preference_probs.max(), preference_probs.mean())
-        return preference_loss, accuracy
+            preference_probs = torch.sigmoid(-reward_diff).unsqueeze(1) # Negative since labels are flipped reward_a > reward_b -> label = 0.0
+            preference_loss = torch.nn.functional.binary_cross_entropy(
+                preference_probs.float(), preference_labels.float(), reduction='none'
+            )
+            preference_loss = torch.mean(preference_loss)
+            predictions = torch.round(preference_probs)
+            accuracy = torch.mean((predictions == preference_labels.float()).float())
+            return preference_loss, accuracy
 
     def get_concept_loss(self, relative_concept_logits, concept_labels):
         concept_probs = torch.sigmoid(-relative_concept_logits) 
@@ -85,7 +48,6 @@ class BottleneckRewardModel(nn.Module):
             concept_loss = vectorised_loss(
                 concept_probs, concept_labels.float(), reduction='none'
             )
-            # concept_loss = torch.sum(concept_loss) / torch.sum(concept_mask)
             concept_loss = (concept_loss.sum(dim=0)/concept_loss.shape[0]).sum()
             hard_labels = torch.round(concept_labels) * concept_mask
             predictions = torch.round(concept_probs) * concept_mask
@@ -101,13 +63,8 @@ class BottleneckRewardModel(nn.Module):
         relative_concept_logits = concept_logits_a - concept_logits_b
 
         # Capture both reward_diff and weights from the scalarizer/gating network
-        if self.use_gating_network:
-            weights = self.gating_network_or_scalarizer(batch['example_a']['prompt_embedding'])
-            reward_diff = torch.sum(weights * relative_concept_logits, dim=1)
-        else:
-            # LinearScalarization will now return both reward_diff and its internal weights
-            reward_diff, weights = self.gating_network_or_scalarizer(relative_concept_logits)
-
+        weights = self.gating_network_or_scalarizer(batch['example_a']['prompt_embedding'])
+        reward_diff = torch.sum(weights * relative_concept_logits, dim=1)
 
         concept_loss, concept_pseudo_acc, concept_mask = self.get_concept_loss(
             relative_concept_logits, batch['concept_labels']
@@ -159,13 +116,7 @@ class ProbabilisticBottleneckRewardModel(BottleneckRewardModel):
         if concept_sampler == "gaussian":
             self.concept_sampler = GaussianSampler()
         
-        # if self.use_temperature:
-        #     self.temperature_network = TemperatureNetwork(
-        #         input_dim=concept_encoder.model[0].in_features,
-        #         hidden_dim=concept_encoder.model[-1].in_features
-        #     )
-        # else:
-        self.temperature_network = None
+
 
     def forward(self, batch):
         out_a = self.concept_encoder(batch['example_a']['prompt_response_embedding'])
@@ -179,49 +130,12 @@ class ProbabilisticBottleneckRewardModel(BottleneckRewardModel):
 
         relative_mean = mean_a - mean_b
         relative_var = var_a + var_b
-        # print("relative_var:", relative_var.min(), relative_var.max(), relative_var.mean()) 
-        if torch.isnan(out_a).any() or torch.isnan(out_b).any():
-            print("❌ NaNs in input embeddings")
-            print("example_a embed stats:", out_a.min(), out_a.max(), out_a.mean())
-            print("example_b embed stats:", out_b.min(), out_b.max(), out_b.mean())
-        if torch.isnan(relative_mean).any():
-            print("⚠️ NaN detected in relative_mean!")
-            print("mean_a stats:", torch.min(mean_a), torch.max(mean_a), torch.isnan(mean_a).sum())
-            print("mean_b stats:", torch.min(mean_b), torch.max(mean_b), torch.isnan(mean_b).sum())
-            print("relative_mean:", relative_mean)
-        if self.use_temperature:
-            relative_var = torch.clamp(relative_var, min=1e-6)
-            relative_concept_logits = self.concept_sampler(relative_mean, relative_var)
-            kl_loss = self.concept_sampler.kl_divergence(relative_mean, relative_var) #+  \
-        else:
-            relative_var = torch.clamp(relative_var, min=1e-12)
-            relative_concept_logits = self.concept_sampler(relative_mean, torch.sqrt(relative_var))
-            kl_loss = self.concept_sampler.kl_divergence(relative_mean, torch.sqrt(relative_var)) #+  \
-        # relative_concept_logits_a = self.concept_sampler(mean_a, var_a)
-        # relative_concept_logits_b = self.concept_sampler(mean_b, var_b)
-        # relative_concept_logits = relative_concept_logits_a - relative_concept_logits_b
-        # kl_loss = self.concept_sampler.kl_divergence(relative_mean, torch.sqrt(relative_var)) #+  \
-                #   self.concept_sampler.kl_divergence(mean_a, torch.sqrt(var_a)) + \
-                #   self.concept_sampler.kl_divergence(mean_b, torch.sqrt(var_b))
-                  # Potentially add regularization on a and b as well
-        
-        # reward_diff_a = torch.sum(weights * relative_concept_logits_a, dim=1)
-        # reward_diff_b = torch.sum(weights * relative_concept_logits_b, dim=1)
-        # reward_diff = reward_diff_a - reward_diff_b
-        # print(kl_loss)
-        if self.use_gating_network:
-            weights = self.gating_network_or_scalarizer(batch['example_a']['prompt_embedding'])
-            reward_diff = torch.sum(weights * relative_concept_logits, dim=1)
-        else:
-            # LinearScalarization will now return both reward_diff and its internal weights
-            reward_diff, weights = self.gating_network_or_scalarizer(relative_concept_logits)
-
-        # if self.use_temperature:
-        #     temperature = self.temperature_network(batch['example_a']['prompt_embedding'])
-        #     reward_diff = reward_diff / temperature
-        # else:
-        temperature = torch.ones_like(reward_diff)
-            
+ 
+        relative_concept_logits = self.concept_sampler(relative_mean, torch.sqrt(relative_var))
+        kl_loss = self.concept_sampler.kl_divergence(relative_mean, torch.sqrt(relative_var))
+        weights = self.gating_network_or_scalarizer(batch['example_a']['prompt_embedding'])
+        reward_diff = torch.sum(weights * relative_concept_logits, dim=1)
+  
         concept_loss, concept_pseudo_acc, concept_mask = self.get_concept_loss(
             relative_concept_logits, batch['concept_labels']
         )
@@ -240,7 +154,6 @@ class ProbabilisticBottleneckRewardModel(BottleneckRewardModel):
             'relative_concept_logits': relative_concept_logits,
             'reward_diff': reward_diff,
             'weights': weights,
-            'temperature': temperature
         }
 
 class MLP(nn.Module):
@@ -275,77 +188,3 @@ class GatingNetwork(nn.Module):
         x = self.fc(x)
         x = self.activation(x)
         return x
-    
-# class GatingNetwork(nn.Module):
-#     def __init__(
-#         self,
-#         input_dim: int,
-#         output_dim: int,
-#         bias: bool = True,
-#         temperature: float = 10,
-#         logit_scale: float = 1.0,
-#         hidden_dim: int = 1024,
-#         n_hidden: int = 3,
-#         dropout: float = 0.2,
-#     ):
-#         super().__init__()
-#         self.temperature = temperature
-#         self.logit_scale = nn.Parameter(torch.ones(1) * logit_scale)
-#         self.dropout_prob = dropout
-#         layers = []
-#         for _ in range(n_hidden):
-#             layers.append(nn.Linear(input_dim, hidden_dim))
-#             input_dim = hidden_dim
-#         layers.append(nn.Linear(input_dim, output_dim, bias=bias))
-#         self.layers = nn.ModuleList(layers)
-
-#     def forward(self, x: torch.FloatTensor) -> torch.FloatTensor:
-#         for i, layer in enumerate(self.layers):
-#             x = layer(x)
-#             if i < len(self.layers) - 1:
-#                 x = F.relu(x)
-#                 if self.dropout_prob > 0:
-#                     x = F.dropout(x, p=self.dropout_prob, training=self.training)
-#         x = F.softmax(x / self.temperature, dim=1)
-#         return x * self.logit_scale[0]
-
-# class NonlinearScalarization(nn.Module):
-#     def __init__(self, input_dim: int, hidden_dim: int = 64, use_nonlinear: bool = True):
-#         super().__init__()
-#         self.use_nonlinear = use_nonlinear
-
-#         if self.use_nonlinear:
-#             self.mlp = nn.Sequential(
-#                 nn.Linear(input_dim, hidden_dim),
-#                 nn.ReLU(),
-#                 nn.Linear(hidden_dim, input_dim)  # maps back to input_dim for compatibility
-#             )
-
-#         self.logits = nn.Parameter(torch.zeros(input_dim))  # Learnable weights for scalarization
-
-#     def forward(self, x: torch.Tensor) -> torch.Tensor:
-#         # x: [B, num_concepts]
-#         if self.use_nonlinear:
-#             x = self.mlp(x)  # apply nonlinear transformation
-
-#         weights = torch.softmax(self.logits, dim=0)  # [num_concepts]
-#         weights_expanded = weights.unsqueeze(0).expand_as(x)  # [B, num_concepts]
-#         reward_diff = (x * weights_expanded).sum(dim=1)  # [B]
-#         return reward_diff, weights
-
-
-class LinearScalarization(nn.Module):
-    def __init__(self, input_dim: int):
-        super().__init__()
-        self.logits = nn.Parameter(torch.zeros(input_dim))  # Learnable raw weights
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor: # Modified return signature
-        # x: [B, num_concepts]
-        weights = torch.softmax(self.logits, dim=0)  # [num_concepts], sums to 1
-        # Expand weights to match batch dimension for element-wise multiplication
-        # weights = results['weights'].detach().cpu()
-        # if weights.dim() == 2:
-        #     weights = weights[0]  
-        weights_expanded = weights.unsqueeze(0).expand_as(x) # [B, num_concepts]
-        reward_diff = (x * weights_expanded).sum(dim=1)  # [B]
-        return reward_diff, weights # Return both

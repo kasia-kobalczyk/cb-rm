@@ -10,33 +10,34 @@ training:
   max_num_eval_steps: 10
   seed: 42
   dry_run: False         # Set to true to skip wandb logging and saving
-  num_episodes: 20
-  acquisition_function: eig_concepts_unc
+  num_episodes: 100
+  acquisition_function: uniform
   num_acquired_samples: 320
   num_initial_samples: 320
   buffer_type: fifo
-  buffer_capacity: 32000
-  buffer_ratio: 0.8
-  training_mode: "sequential"   # options: joint | sequential | pretrain_joint
+  buffer_capacity: 320000
+  training_mode: "joint"   # options: joint | sequential | pretrain_joint
   cp_epochs: 1
   j_epochs: 1
   s_epochs: 1
   active_learning: true
 
+
 loss:
   beta_concept: 1.0              # Weight for concept_loss in total loss
   beta_kl: 0.001
   beta_temperature: 0.001
+
 save:
-  project_name: active_learning
-  wandb_entity: interp_rewards_RLHF
-  run_name_prefix: active_learning_crm
+  project_name: cb-rm
+  wandb_entity: al_cb-rm
+  run_name_prefix: al_cb-rm
 
 data:
-  embeddings_path: './datasets/ultrafeedback/embeddings/meta-llama/Meta-Llama-3-8B/'
+  embeddings_path: './datasets/ultrafeedback/embeddings/meta-llama/Llama-2-7b-hf/'
   splits_path: './datasets/ultrafeedback/splits.csv'
-  concept_labels_path: './datasets/ultrafeedback/concept_labels/openbmb' 
-  preference_labels_path: './datasets/ultrafeedback/preference_labels/openbmb_average'
+  concept_labels_path: './datasets/ultrafeedback/concept_labels/gpt4o-eus2-202407' 
+  preference_labels_path: './datasets/ultrafeedback/preference_labels/gpt4o-eus2-202407'
   batch_size: 32
  
 resolve_model_target:

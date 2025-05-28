@@ -127,13 +127,6 @@ class ExpandableConceptPreferenceDataset(PreferenceDataset):
         self.labelled_data.loc[nan_index, 'relative_concept_labels'] = None
         self.labelled_data.dropna(subset=['relative_concept_labels'], inplace=True)
 
-        # self.pool_index = []
-        # for i in self.labelled_data.index:
-        #     labels = self.labelled_data.loc[i, 'relative_concept_labels']
-        #     self.pool_index += [(i, k) for k in range(len(self.concept_names)) if labels[k] != -1.0]
-        # self.pool_index = set(self.pool_index)
-
-
         # Vectorized pool index, faster
         # Convert the full column to a 2D array
         labels_array = np.stack(self.labelled_data['relative_concept_labels'].values)
@@ -228,55 +221,3 @@ def batch_to_device(batch, device):
             ))
             
     return batch
-
-if __name__ == '__main__':
-    from argparse import Namespace
-    cfg = Namespace(
-        embeddings_path='./datasets/ultrafeedback/embeddings/meta-llama/Meta-Llama-3-8B/',
-        splits_path='./datasets/ultrafeedback/splits.csv',
-        concept_labels_path='./datasets/ultrafeedback/concept_labels/openbmb', #'./datasets/ultrafeedback/concept_labels/meta-llama/Meta-Llama-3-70B-Instruct',
-        preference_labels_path='./datasets/ultrafeedback/preference_labels/openbmb_average',
-        batch_size=4,
-        num_intial_samples=2048,
-    )
-    
-    # dataloader = get_dataloader(cfg, split='train')
-    # print(f'Number of batches: {len(dataloader)}')
-    # for batch in dataloader:
-    #     print(batch['example_a']['prompt_embedding'].shape)
-    #     print(batch['example_a']['prompt_response_embedding'].shape)
-    #     print(batch['example_b']['prompt_embedding'].shape)
-    #     print(batch['example_b']['prompt_response_embedding'].shape)
-    #     print(batch['preference_labels'].shape)
-    #     print(batch['concept_labels'].shape)
-    #     break
-
-    dataset = ExpandableConceptPreferenceDataset(
-        embeddings_path=cfg.embeddings_path,
-        splits_path=cfg.splits_path,
-        concept_labels_path=cfg.concept_labels_path,
-        preference_labels_path=cfg.preference_labels_path,
-        split='train',
-        num_initial_samples=2048
-    )    
-
-    print(len(dataset))
-    print(dataset.pairs_data.index)
-
-    dataloader = torch.utils.data.DataLoader(
-        dataset,
-        batch_size=64,
-        shuffle=True,
-        collate_fn=collate_fn,
-    )
-
-    pool_index = dataset.pool_index
-    pool_index = [instance_idx for (instance_idx, concept_idx) in pool_index]
-    pool_dataset = torch.utils.data.Subset(dataset, pool_index)
-
-    # print(len(dataset.pool_index))
-    
-    # while dataset.pool_index:
-    #     added_idx = list(random.sample(list(dataset.pool_index), 2048))
-    #     dataset.build_dataset(added_idx)
-    #     print(len(dataset.pool_index))
