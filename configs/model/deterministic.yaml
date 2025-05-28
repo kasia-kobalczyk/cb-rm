@@ -1,5 +1,0 @@
-defaults:
-  - base
-
-model_type: deterministic
-resolve_model_target: src.models.reward_models.BottleneckRewardModel
